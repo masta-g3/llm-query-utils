@@ -42,6 +42,16 @@ answer = run_query(
 )
 ```
 
+## Environment Variables
+
+The underlying SDKs read API keys from the environment — set whichever you need:
+
+| Variable | Required for |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Claude models (Agent SDK) |
+| `OPENAI_API_KEY` | OpenAI models (LiteLLM) |
+| `ANTHROPIC_EXTENDED_THINKING_BETA` | Optional — beta header for extended thinking |
+
 ## Modules
 
 | Module | Purpose |
