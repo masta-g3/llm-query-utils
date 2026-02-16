@@ -15,6 +15,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     AssistantMessage,
     TextBlock,
+    ToolUseBlock,
     ResultMessage,
 )
 
@@ -118,6 +119,7 @@ async def _agent_sdk_query(
     text_parts = []
     message_count = 0
     block_count = 0
+    tool_use_count = 0
     structured_result = None
     error_result = None
     total_cost_usd = None
@@ -137,6 +139,9 @@ async def _agent_sdk_query(
                 block_count += 1
                 if isinstance(block, TextBlock):
                     text_parts.append(block.text)
+                elif isinstance(block, ToolUseBlock):
+                    tool_use_count += 1
+                    logger.info(f"Agent tool call #{tool_use_count}: {block.name}")
 
     if usage_data:
         fire_usage_callback(UsageData(
@@ -154,16 +159,16 @@ async def _agent_sdk_query(
         raise RuntimeError(f"Agent SDK error: {error_result}")
 
     if structured_result is not None:
-        logger.debug(
+        logger.info(
             f"Agent SDK query complete: {message_count} messages, "
-            f"structured output returned"
+            f"{tool_use_count} tool calls, structured output returned"
         )
         return structured_result
 
     result = "".join(text_parts)
-    logger.debug(
+    logger.info(
         f"Agent SDK query complete: {message_count} messages, "
-        f"{block_count} blocks, {len(result)} chars"
+        f"{block_count} blocks, {tool_use_count} tool calls, {len(result)} chars"
     )
 
     if not result.strip():
@@ -216,7 +221,7 @@ def run_query(
         )
 
     temperature = (
-        None if any(x in llm_model for x in ["o1", "r1", "o3"]) else temperature
+        None if any(x in llm_model for x in ["o1", "r1", "o3", "gpt-5"]) else temperature
     )
 
     thinking_requested = (
