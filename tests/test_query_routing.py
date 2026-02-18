@@ -1,0 +1,76 @@
+from types import SimpleNamespace
+
+import llm_query_utils.query as query_module
+
+
+def _fake_completion(*args, **kwargs):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="litellm-path"))],
+        usage=SimpleNamespace(
+            prompt_tokens=1,
+            completion_tokens=1,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
+    )
+
+
+def test_routes_to_codex_when_enabled(monkeypatch):
+    async def fake_codex(*args, **kwargs):
+        return "codex-path"
+
+    monkeypatch.setattr(query_module, "_codex_sdk_query", fake_codex)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="gpt-5-codex",
+        use_codex_sdk=True,
+        use_agent_sdk=False,
+    )
+
+    assert result == "codex-path"
+
+
+def test_routes_to_agent_sdk_for_claude(monkeypatch):
+    async def fake_agent(*args, **kwargs):
+        return "agent-path"
+
+    monkeypatch.setattr(query_module, "_agent_sdk_query", fake_agent)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="claude-3-5-sonnet",
+        use_codex_sdk=False,
+        use_agent_sdk=True,
+    )
+
+    assert result == "agent-path"
+
+
+def test_routes_to_litellm_when_codex_disabled(monkeypatch):
+    monkeypatch.setattr(query_module, "completion", _fake_completion)
+    monkeypatch.setattr(query_module, "_log_usage", lambda *args, **kwargs: None)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="gpt-5-codex",
+        use_codex_sdk=False,
+        use_agent_sdk=False,
+    )
+
+    assert result == "litellm-path"
+
+
+def test_codex_route_rejects_sdk_tools():
+    try:
+        query_module.run_query(
+            user_message="hello",
+            llm_model="gpt-5-codex",
+            use_codex_sdk=True,
+            use_agent_sdk=False,
+            sdk_allowed_tools=["Read"],
+        )
+    except ValueError as exc:
+        assert "sdk_allowed_tools is not supported" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for sdk_allowed_tools + use_codex_sdk")
