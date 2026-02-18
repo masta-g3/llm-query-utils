@@ -15,7 +15,7 @@ Reusable LLM query layer extracted from [llmpedia-workflows](https://github.com/
 | Claude backend | `claude-agent-sdk` | Native structured output, tool use |
 | Other models | `litellm` + `instructor` | OpenAI-compatible, structured output via tool-calling |
 | Schemas | `pydantic` v2 | Shared between both backends |
-| Cost tracking | `tokencost` | Per-call token/cost calculation |
+| Cost tracking | `litellm` pricing utilities | Per-call token/cost calculation |
 | Packaging | `uv` + `uv_build` | Fast, lockfile-based |
 
 ## Architecture

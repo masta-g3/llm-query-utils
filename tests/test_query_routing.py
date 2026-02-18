@@ -74,3 +74,56 @@ def test_codex_route_rejects_sdk_tools():
         assert "sdk_allowed_tools is not supported" in str(exc)
     else:
         raise AssertionError("Expected ValueError for sdk_allowed_tools + use_codex_sdk")
+
+
+def test_retries_litellm_transient_failures_with_backoff(monkeypatch):
+    call_count = {"value": 0}
+    sleeps = []
+
+    def flaky_completion(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] < 3:
+            raise RuntimeError("transient failure")
+        return _fake_completion()
+
+    monkeypatch.setattr(query_module, "completion", flaky_completion)
+    monkeypatch.setattr(query_module, "_log_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(query_module.time, "sleep", lambda delay: sleeps.append(delay))
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="claude-3-5-sonnet",
+        use_agent_sdk=False,
+    )
+
+    assert result == "litellm-path"
+    assert call_count["value"] == 3
+    assert sleeps == [30, 60]
+
+
+def test_extended_thinking_injects_payload_and_merges_beta_header(monkeypatch):
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["thinking"] = kwargs.get("thinking")
+        captured["extra_headers"] = kwargs.get("extra_headers")
+        return _fake_completion()
+
+    monkeypatch.setattr(query_module, "completion", fake_completion)
+    monkeypatch.setattr(query_module, "_log_usage", lambda *args, **kwargs: None)
+
+    query_module.run_query(
+        user_message="hello",
+        llm_model="claude-3-5-sonnet",
+        use_agent_sdk=False,
+        enable_extended_thinking=True,
+        extended_thinking_budget_tokens=2048,
+        thinking_options={"focus": "high"},
+        extended_thinking_beta="beta-1",
+        extra_headers={"anthropic-beta": "beta-0"},
+    )
+
+    assert captured["thinking"]["type"] == "enabled"
+    assert captured["thinking"]["budget_tokens"] == 2048
+    assert captured["thinking"]["focus"] == "high"
+    assert captured["extra_headers"]["anthropic-beta"] == "beta-0,beta-1"

@@ -77,4 +77,4 @@ If not logged in, `run_query()` raises:
 | `config.py` | Default model constants |
 | `cache.py` | Anthropic prompt caching helpers |
 | `vision.py` | Multi-modal message formatting |
-| `usage.py` | Token/cost tracking via callback |
+| `usage.py` | Token/cost tracking via callback (LiteLLM pricing on LiteLLM route) |

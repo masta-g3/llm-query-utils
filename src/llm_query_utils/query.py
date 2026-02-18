@@ -2,6 +2,7 @@ import logging
 import os
 import asyncio
 import json
+from copy import deepcopy
 import subprocess
 import tempfile
 import time
@@ -10,8 +11,7 @@ import warnings
 from typing import Type, Optional, Union
 
 from pydantic import BaseModel
-from tokencost import calculate_cost_by_tokens
-from litellm import completion
+from litellm import completion, cost_per_token, get_model_info
 import instructor
 from claude_agent_sdk import (
     query as agent_sdk_query,
@@ -32,39 +32,57 @@ logger = logging.getLogger(__name__)
 CODEX_SUPPORTED_MODELS = {"gpt-5-codex"}
 
 
+def _calculate_usage_costs(
+    usage,
+    llm_model: str,
+) -> tuple[float, float, Optional[float], Optional[float]]:
+    prompt_tokens = usage.prompt_tokens
+    completion_tokens = usage.completion_tokens
+    cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+
+    prompt_cost, completion_cost = cost_per_token(
+        model=llm_model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cache_creation_input_tokens=cache_creation_tokens,
+        cache_read_input_tokens=cache_read_tokens,
+    )
+
+    model_info = get_model_info(model=llm_model)
+    input_rate = model_info.get("input_cost_per_token")
+    cache_read_rate = model_info.get("cache_read_input_token_cost")
+    cache_creation_rate = model_info.get("cache_creation_input_token_cost")
+
+    cache_read_cost = (
+        cache_read_tokens * cache_read_rate
+        if cache_read_tokens and cache_read_rate is not None
+        else None
+    )
+    cache_creation_effective_rate = (
+        cache_creation_rate if cache_creation_rate is not None else (
+            input_rate * 2 if input_rate is not None else None
+        )
+    )
+    cache_creation_cost = (
+        cache_creation_tokens * cache_creation_effective_rate
+        if cache_creation_tokens and cache_creation_effective_rate is not None
+        else None
+    )
+
+    return prompt_cost, completion_cost, cache_creation_cost, cache_read_cost
+
+
 def _log_usage(
     usage, llm_model: str, process_id: str = None, verbose: bool = False
 ) -> None:
-    prompt_cost = calculate_cost_by_tokens(usage.prompt_tokens, llm_model, "input")
-    completion_cost = calculate_cost_by_tokens(
-        usage.completion_tokens, llm_model, "output"
+    prompt_cost, completion_cost, cache_creation_cost, cache_read_cost = (
+        _calculate_usage_costs(usage, llm_model)
     )
-
-    cache_creation_cost = None
-    cache_read_cost = None
-    if (
-        hasattr(usage, "cache_creation_input_tokens")
-        and usage.cache_creation_input_tokens
-    ):
-        cache_creation_cost = (
-            calculate_cost_by_tokens(
-                usage.cache_creation_input_tokens, llm_model, "input"
-            )
-            * 2
-        )
-    if hasattr(usage, "cache_read_input_tokens") and usage.cache_read_input_tokens:
-        cache_read_cost = calculate_cost_by_tokens(
-            usage.cache_read_input_tokens, llm_model, "cached"
-        )
 
     if verbose:
         total_tokens = usage.prompt_tokens + usage.completion_tokens
-        total_cost = (
-            (prompt_cost or 0)
-            + (completion_cost or 0)
-            + (cache_creation_cost or 0)
-            + (cache_read_cost or 0)
-        )
+        total_cost = (prompt_cost or 0) + (completion_cost or 0)
         cache_info = ""
         cache_creation_tokens_val = getattr(usage, "cache_creation_input_tokens", 0) or 0
         cache_read_tokens_val = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -217,6 +235,42 @@ def _parse_codex_event_stream(event_stream: str) -> tuple[Optional[dict], Option
     return usage, error_message
 
 
+def _to_codex_strict_schema(schema: dict) -> dict:
+    strict_schema = deepcopy(schema)
+
+    def _walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object" or "properties" in node:
+                node.setdefault("additionalProperties", False)
+
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                for value in properties.values():
+                    _walk(value)
+
+            items = node.get("items")
+            if items is not None:
+                _walk(items)
+
+            for key in ("allOf", "anyOf", "oneOf"):
+                variants = node.get(key)
+                if isinstance(variants, list):
+                    for variant in variants:
+                        _walk(variant)
+
+            for defs_key in ("$defs", "definitions"):
+                defs = node.get(defs_key)
+                if isinstance(defs, dict):
+                    for value in defs.values():
+                        _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(strict_schema)
+    return strict_schema
+
+
 def _fire_codex_usage(
     usage: Optional[dict],
     llm_model: str,
@@ -233,7 +287,7 @@ def _fire_codex_usage(
         prompt_cost=0,
         completion_cost=0,
         cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
-        cache_read_input_tokens=usage.get("cached_input_tokens", 0),
+        cache_read_input_tokens=usage.get("cached_input_tokens", usage.get("cache_read_input_tokens", 0)),
     ))
 
 
@@ -281,7 +335,7 @@ def _run_codex_exec(
 
     if output_schema is not None:
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".json", delete=False) as schema_file:
-            json.dump(output_schema.model_json_schema(), schema_file)
+            json.dump(_to_codex_strict_schema(output_schema.model_json_schema()), schema_file)
             schema_path = schema_file.name
         cmd.extend(["--output-schema", schema_path])
 
