@@ -78,6 +78,269 @@ def test_agent_sdk_query_raises_on_error_and_empty_response(monkeypatch):
         )
 
 
+def test_agent_sdk_query_emits_zero_usage_on_terminal_success_without_usage(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    class FakeResultMessage:
+        def __init__(
+            self,
+            *,
+            usage=None,
+            total_cost_usd=0,
+            is_error=False,
+            result=None,
+            structured_output=None,
+        ):
+            self.usage = usage
+            self.total_cost_usd = total_cost_usd
+            self.is_error = is_error
+            self.result = result
+            self.structured_output = structured_output
+
+    class FakeAssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeTextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeToolUseBlock:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(query_module, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(query_module, "AssistantMessage", FakeAssistantMessage)
+    monkeypatch.setattr(query_module, "TextBlock", FakeTextBlock)
+    monkeypatch.setattr(query_module, "ToolUseBlock", FakeToolUseBlock)
+
+    async def success_stream(*args, **kwargs):
+        yield FakeAssistantMessage([FakeTextBlock("agent-ok")])
+        yield FakeResultMessage(usage=None, total_cost_usd=0.42, is_error=False)
+
+    monkeypatch.setattr(query_module, "agent_sdk_query", success_stream)
+
+    result = asyncio.run(
+        query_module._agent_sdk_query(
+            system_message="system",
+            user_message="hello",
+            llm_model="claude-3-5-sonnet",
+            process_id="p-1",
+        )
+    )
+
+    assert result == "agent-ok"
+    assert len(usage_events) == 1
+    assert usage_events[0].process_id == "p-1"
+    assert usage_events[0].prompt_tokens == 0
+    assert usage_events[0].completion_tokens == 0
+    assert usage_events[0].prompt_cost == 0.42
+    assert usage_events[0].completion_cost == 0
+
+
+def test_agent_sdk_query_emits_usage_with_present_payload(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    class FakeResultMessage:
+        def __init__(
+            self,
+            *,
+            usage=None,
+            total_cost_usd=0,
+            is_error=False,
+            result=None,
+            structured_output=None,
+        ):
+            self.usage = usage
+            self.total_cost_usd = total_cost_usd
+            self.is_error = is_error
+            self.result = result
+            self.structured_output = structured_output
+
+    class FakeAssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeTextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeToolUseBlock:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(query_module, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(query_module, "AssistantMessage", FakeAssistantMessage)
+    monkeypatch.setattr(query_module, "TextBlock", FakeTextBlock)
+    monkeypatch.setattr(query_module, "ToolUseBlock", FakeToolUseBlock)
+
+    async def success_stream(*args, **kwargs):
+        yield FakeAssistantMessage([FakeTextBlock("agent-ok")])
+        yield FakeResultMessage(
+            usage={
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 1,
+            },
+            total_cost_usd=0.77,
+            is_error=False,
+        )
+
+    monkeypatch.setattr(query_module, "agent_sdk_query", success_stream)
+
+    result = asyncio.run(
+        query_module._agent_sdk_query(
+            system_message="system",
+            user_message="hello",
+            llm_model="claude-3-5-sonnet",
+            process_id="p-usage",
+        )
+    )
+
+    assert result == "agent-ok"
+    assert len(usage_events) == 1
+    assert usage_events[0].process_id == "p-usage"
+    assert usage_events[0].prompt_tokens == 12
+    assert usage_events[0].completion_tokens == 5
+    assert usage_events[0].cache_creation_input_tokens == 3
+    assert usage_events[0].cache_read_input_tokens == 1
+    assert usage_events[0].prompt_cost == 0.77
+    assert usage_events[0].completion_cost == 0
+
+
+def test_agent_sdk_query_emits_usage_before_terminal_error(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    class FakeResultMessage:
+        def __init__(
+            self,
+            *,
+            usage=None,
+            total_cost_usd=0,
+            is_error=False,
+            result=None,
+            structured_output=None,
+        ):
+            self.usage = usage
+            self.total_cost_usd = total_cost_usd
+            self.is_error = is_error
+            self.result = result
+            self.structured_output = structured_output
+
+    class FakeAssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeTextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeToolUseBlock:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(query_module, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(query_module, "AssistantMessage", FakeAssistantMessage)
+    monkeypatch.setattr(query_module, "TextBlock", FakeTextBlock)
+    monkeypatch.setattr(query_module, "ToolUseBlock", FakeToolUseBlock)
+
+    async def error_stream(*args, **kwargs):
+        yield FakeResultMessage(usage=None, total_cost_usd=0.0, is_error=True, result="bad request")
+
+    monkeypatch.setattr(query_module, "agent_sdk_query", error_stream)
+
+    with pytest.raises(RuntimeError, match="Agent SDK error"):
+        asyncio.run(
+            query_module._agent_sdk_query(
+                system_message="system",
+                user_message="hello",
+                llm_model="claude-3-5-sonnet",
+            )
+        )
+
+    assert len(usage_events) == 1
+    assert usage_events[0].prompt_tokens == 0
+    assert usage_events[0].completion_tokens == 0
+
+
+def test_agent_sdk_query_transport_error_before_terminal_emits_no_usage(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    class FakeResultMessage:
+        def __init__(
+            self,
+            *,
+            usage=None,
+            total_cost_usd=0,
+            is_error=False,
+            result=None,
+            structured_output=None,
+        ):
+            self.usage = usage
+            self.total_cost_usd = total_cost_usd
+            self.is_error = is_error
+            self.result = result
+            self.structured_output = structured_output
+
+    class FakeAssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeTextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class FakeToolUseBlock:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(query_module, "ResultMessage", FakeResultMessage)
+    monkeypatch.setattr(query_module, "AssistantMessage", FakeAssistantMessage)
+    monkeypatch.setattr(query_module, "TextBlock", FakeTextBlock)
+    monkeypatch.setattr(query_module, "ToolUseBlock", FakeToolUseBlock)
+
+    async def broken_stream(*args, **kwargs):
+        raise RuntimeError("stream failure")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(query_module, "agent_sdk_query", broken_stream)
+
+    with pytest.raises(RuntimeError, match="stream failure"):
+        asyncio.run(
+            query_module._agent_sdk_query(
+                system_message="system",
+                user_message="hello",
+                llm_model="claude-3-5-sonnet",
+            )
+        )
+
+    assert usage_events == []
+
+
+def test_fire_agent_usage_handles_malformed_payload():
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    query_module._fire_agent_usage(
+        llm_model="claude-3-5-sonnet",
+        process_id="p-malformed",
+        usage_data="not-a-dict",
+        total_cost_usd=None,
+    )
+
+    assert len(usage_events) == 1
+    assert usage_events[0].prompt_tokens == 0
+    assert usage_events[0].completion_tokens == 0
+    assert usage_events[0].cache_creation_input_tokens == 0
+    assert usage_events[0].cache_read_input_tokens == 0
+    assert usage_events[0].prompt_cost == 0
+
+
 def test_parse_codex_event_stream_extracts_usage_and_error():
     event_stream = "\n".join(
         [
@@ -159,9 +422,19 @@ def test_format_vision_messages_applies_provider_order_and_url_formatting():
     assert other_content[2]["image_url"]["url"] == "https://example.com/image.png"
 
 
-def test_log_usage_emits_costs_for_gpt5_codex():
+def test_log_usage_emits_costs_for_gpt5_codex(monkeypatch):
     usage_events = []
     set_usage_callback(lambda data: usage_events.append(data))
+    monkeypatch.setattr(query_module, "cost_per_token", lambda **kwargs: (1.25, 2.5))
+    monkeypatch.setattr(
+        query_module,
+        "get_model_info",
+        lambda **kwargs: {
+            "input_cost_per_token": 0.5,
+            "cache_creation_input_token_cost": None,
+            "cache_read_input_token_cost": 0.1,
+        },
+    )
 
     usage = SimpleNamespace(
         prompt_tokens=1000,

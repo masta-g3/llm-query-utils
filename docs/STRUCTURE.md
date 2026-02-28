@@ -75,7 +75,13 @@ llm-query-utils/
 
 ### `usage.py` — Usage tracking
 
-Consumer registers a callback via `set_usage_callback(fn)`. Every query fires `UsageData` (tokens, costs, cache stats) to the callback. This decouples the library from any specific logging/DB implementation.
+Consumer registers a callback via `set_usage_callback(fn)`. Query backends emit `UsageData` (tokens, costs, cache stats) through this callback, decoupling this package from any specific logging/DB implementation.
+
+Usage emission notes:
+- LiteLLM path emits usage from provider-reported token usage.
+- Codex path emits usage from Codex event stream usage payloads.
+- Agent SDK path emits one usage event when a terminal `ResultMessage` is received.
+- If Agent SDK omits usage payload fields, Agent usage falls back to zeros instead of skipping the callback event.
 
 ### `cache.py` — Prompt caching
 

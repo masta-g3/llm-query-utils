@@ -19,3 +19,13 @@
   created_at: "2026-02-18"
   completed_at: "2026-02-17"
   spec_file: docs/history/20260217_codex-001.1_litellm_cost_migration.md
+- id: codex-002
+  epic: codex
+  status: done
+  title: Guarantee usage logging coverage for Agent SDK queries
+  description: Ensure Agent SDK query path emits usage callback events consistently (including missing usage payload cases) so downstream DB token/cost logging is reliable.
+  priority: 2
+  depends_on: []
+  spec_file: docs/history/20260228_codex-002_agent_usage_logging.md
+  created_at: "2026-02-28"
+  completed_at: "2026-02-28"

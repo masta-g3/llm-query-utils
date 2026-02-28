@@ -112,6 +112,28 @@ def _log_usage(
     ))
 
 
+def _fire_agent_usage(
+    llm_model: str,
+    process_id: Optional[str],
+    usage_data,
+    total_cost_usd: Optional[float],
+) -> None:
+    usage = usage_data if isinstance(usage_data, dict) else {}
+    if usage_data is None:
+        logger.debug("Agent SDK usage missing; emitting zero-token usage callback.")
+
+    fire_usage_callback(UsageData(
+        model=llm_model,
+        process_id=process_id,
+        prompt_tokens=usage.get("input_tokens", 0),
+        completion_tokens=usage.get("output_tokens", 0),
+        prompt_cost=float(total_cost_usd or 0),
+        completion_cost=0,
+        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+        cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
+    ))
+
+
 async def _agent_sdk_query(
     system_message: Optional[str],
     user_message: str,
@@ -147,10 +169,12 @@ async def _agent_sdk_query(
     error_result = None
     total_cost_usd = None
     usage_data = None
+    has_result_message = False
 
     async for message in agent_sdk_query(prompt=user_message, options=options):
         message_count += 1
         if isinstance(message, ResultMessage):
+            has_result_message = True
             total_cost_usd = message.total_cost_usd
             usage_data = message.usage
             if message.is_error:
@@ -166,17 +190,13 @@ async def _agent_sdk_query(
                     tool_use_count += 1
                     logger.info(f"Agent tool call #{tool_use_count}: {block.name}")
 
-    if usage_data:
-        fire_usage_callback(UsageData(
-            model=llm_model,
+    if has_result_message:
+        _fire_agent_usage(
+            llm_model=llm_model,
             process_id=process_id,
-            prompt_tokens=usage_data.get("input_tokens", 0),
-            completion_tokens=usage_data.get("output_tokens", 0),
-            prompt_cost=total_cost_usd or 0,
-            completion_cost=0,
-            cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens", 0),
-            cache_read_input_tokens=usage_data.get("cache_read_input_tokens", 0),
-        ))
+            usage_data=usage_data,
+            total_cost_usd=total_cost_usd,
+        )
 
     if error_result:
         raise RuntimeError(f"Agent SDK error: {error_result}")
