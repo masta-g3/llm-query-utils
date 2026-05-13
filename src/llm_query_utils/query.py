@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore", message="Valid config keys have changed in V2:
 
 logger = logging.getLogger(__name__)
 
-CODEX_SUPPORTED_MODELS = {"gpt-5-codex"}
+CODEX_MODEL_PREFIXES = ("gpt-5",)
 
 
 def _calculate_usage_costs(
@@ -221,7 +221,7 @@ async def _agent_sdk_query(
 
 def _is_codex_model(llm_model: str) -> bool:
     model = llm_model.split("/")[-1]
-    return model in CODEX_SUPPORTED_MODELS
+    return model.startswith(CODEX_MODEL_PREFIXES)
 
 
 def _build_codex_prompt(system_message: Optional[str], user_message: str) -> str:
@@ -265,6 +265,7 @@ def _to_codex_strict_schema(schema: dict) -> dict:
 
             properties = node.get("properties")
             if isinstance(properties, dict):
+                node["required"] = list(properties.keys())
                 for value in properties.values():
                     _walk(value)
 
@@ -406,10 +407,11 @@ async def _codex_sdk_query(
     if not isinstance(options, dict):
         raise ValueError("codex_options must be a dictionary when provided")
 
-    model = options.get("model") or llm_model.split("/")[-1]
-    if model not in CODEX_SUPPORTED_MODELS:
+    model = (options.get("model") or llm_model).split("/")[-1]
+    if not _is_codex_model(model):
+        supported_prefixes = ", ".join(f"{prefix}*" for prefix in CODEX_MODEL_PREFIXES)
         raise ValueError(
-            f"Unsupported Codex model '{model}'. Supported models: {sorted(CODEX_SUPPORTED_MODELS)}"
+            f"Unsupported Codex model '{model}'. Supported model prefixes: {supported_prefixes}"
         )
     extra_args = options.get("extra_args")
     if extra_args is not None and not isinstance(extra_args, list):
@@ -462,7 +464,7 @@ def run_query(
         use_agent_sdk: Route query through Agent SDK instead of direct API (default: True).
             Automatically disabled for: custom messages, extended thinking, non-Claude models.
         use_codex_sdk: Route query through Codex CLI transport (default: False).
-            Supported only for explicitly allowed Codex models and single-turn user_message input.
+            Supported for gpt-5* models and single-turn user_message input.
         sdk_allowed_tools: Tools the agent can use (e.g., ["Read"] for image analysis).
     """
     thinking_requested = (

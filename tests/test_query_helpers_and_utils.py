@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,18 @@ from llm_query_utils.usage import set_usage_callback
 class OutputSchema(BaseModel):
     status: str
     count: int
+
+
+class OptionalOutputSchema(BaseModel):
+    required_value: str
+    optional_value: Optional[str] = None
+
+
+def test_codex_strict_schema_requires_all_object_properties():
+    schema = query_module._to_codex_strict_schema(OptionalOutputSchema.model_json_schema())
+
+    assert schema["required"] == ["required_value", "optional_value"]
+    assert schema["additionalProperties"] is False
 
 
 def test_agent_sdk_query_raises_on_error_and_empty_response(monkeypatch):
@@ -570,6 +583,29 @@ def test_codex_options_extra_args_must_be_list():
                 codex_options={"extra_args": "--bad"},
             )
         )
+
+
+def test_codex_options_accepts_any_gpt5_model(monkeypatch):
+    monkeypatch.setattr(query_module, "_run_codex_login_preflight", lambda: None)
+    captured = {}
+
+    def fake_exec(model, prompt, output_schema, extra_args):
+        captured["model"] = model
+        return "ok", None, ""
+
+    monkeypatch.setattr(query_module, "_run_codex_exec", fake_exec)
+
+    result = asyncio.run(
+        query_module._codex_sdk_query(
+            system_message=None,
+            user_message="hello",
+            llm_model="gpt-5-codex",
+            codex_options={"model": "gpt-5.4"},
+        )
+    )
+
+    assert result == "ok"
+    assert captured["model"] == "gpt-5.4"
 
 
 def test_codex_options_model_must_be_supported():

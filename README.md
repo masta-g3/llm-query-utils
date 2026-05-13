@@ -3,7 +3,7 @@
 Minimal LLM query routing via Claude Agent SDK and LiteLLM/Instructor.
 
 A single `run_query()` entrypoint that routes to the right backend:
-- **Codex model (`gpt-5-codex`) + `use_codex_sdk=True`** -> Codex CLI (ChatGPT login)
+- **`gpt-5*` model + `use_codex_sdk=True`** -> Codex CLI (ChatGPT login)
 - **Claude models** → Agent SDK (structured output, tool use)
 - **Everything else** → LiteLLM/Instructor (OpenAI-compatible)
 
@@ -42,10 +42,17 @@ answer = run_query(
     llm_model="gpt-5-mini",
 )
 
-# Codex route (uses local Codex CLI session; no OPENAI_API_KEY required)
+# ChatGPT subscription provider via LiteLLM OAuth device flow
+answer = run_query(
+    user_message="Hello",
+    llm_model="chatgpt/gpt-5.4",
+    use_agent_sdk=False,
+)
+
+# Codex route for any gpt-5* model (uses local Codex CLI session; no OPENAI_API_KEY required)
 answer = run_query(
     user_message="Reply with exactly: codex_ok",
-    llm_model="gpt-5-codex",
+    llm_model="gpt-5.3-codex",
     use_codex_sdk=True,
     use_agent_sdk=False,
 )
@@ -58,13 +65,18 @@ The underlying SDKs read API keys from the environment — set whichever you nee
 | Variable | Required for |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Claude models (Agent SDK) |
-| `OPENAI_API_KEY` | OpenAI models (LiteLLM) |
+| `OPENAI_API_KEY` | OpenAI API models (LiteLLM, e.g. `gpt-5-mini`) |
+| `CHATGPT_TOKEN_DIR` | Optional stable token directory for LiteLLM `chatgpt/...` OAuth |
 | `ANTHROPIC_EXTENDED_THINKING_BETA` | Optional — beta header for extended thinking |
+
+ChatGPT subscription access uses LiteLLM's `chatgpt/...` provider and requires `litellm>=1.81.11`. On first use, LiteLLM prompts for an OAuth device-code login; set `CHATGPT_TOKEN_DIR` for scheduled jobs so the same token cache is reused.
 
 Codex route auth is different:
 - authenticate once with `codex login`
 - verify with `codex login status` (must show `Logged in using ChatGPT`)
-- then call `run_query(... use_codex_sdk=True, llm_model="gpt-5-codex")`
+- then call `run_query(... use_codex_sdk=True, llm_model="gpt-5.3-codex")`
+- any model whose basename starts with `gpt-5` is routed through Codex when `use_codex_sdk=True`, including provider-prefixed names like `chatgpt/gpt-5.4`
+- legacy alias `gpt-5-codex` is still accepted for compatibility
 
 If not logged in, `run_query()` raises:
 - `Codex CLI is not authenticated. Run codex login with ChatGPT before using use_codex_sdk=True.`

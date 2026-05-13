@@ -13,7 +13,7 @@ Reusable LLM query layer extracted from [llmpedia-workflows](https://github.com/
 | Query routing | `run_query()` | Single entrypoint, auto-selects backend |
 | Codex backend | Codex CLI (`codex exec`) | ChatGPT subscription auth path without API keys |
 | Claude backend | `claude-agent-sdk` | Native structured output, tool use |
-| Other models | `litellm` + `instructor` | OpenAI-compatible, structured output via tool-calling |
+| Other models | `litellm>=1.81.11` + `instructor` | OpenAI-compatible and `chatgpt/...` subscription access, structured output via tool-calling |
 | Schemas | `pydantic` v2 | Shared between both backends |
 | Cost tracking | `litellm` pricing utilities | Per-call token/cost calculation |
 | Packaging | `uv` + `uv_build` | Fast, lockfile-based |
@@ -22,7 +22,7 @@ Reusable LLM query layer extracted from [llmpedia-workflows](https://github.com/
 
 ```mermaid
 flowchart TD
-    A[run_query] --> B{Codex model + use_codex_sdk?}
+    A[run_query] --> B{gpt-5* model + use_codex_sdk?}
     B -->|Yes| C[_codex_sdk_query]
     B -->|No| D{Claude model + use_agent_sdk?}
     D -->|Yes| E[_agent_sdk_query]
@@ -39,14 +39,14 @@ flowchart TD
 `run_query()` can route to three backends:
 - Codex CLI when:
   - `use_codex_sdk=True`
-  - `llm_model` matches a supported Codex model (`gpt-5-codex`)
+  - `llm_model` basename starts with `gpt-5`, including provider-prefixed names like `chatgpt/gpt-5.4`
   - single-turn `user_message` flow (no `messages`)
   - extended thinking options are not enabled
 - Agent SDK for Claude models (default), but falls back to LiteLLM when:
 - Custom `messages` list is provided (multi-turn)
 - Extended thinking is enabled
 - Model name doesn't contain "claude"
-- LiteLLM/Instructor for all remaining cases
+- LiteLLM/Instructor for all remaining cases, including ChatGPT subscription models named `chatgpt/...` when `use_codex_sdk=False`
 
 ## Directory Layout
 
@@ -69,7 +69,7 @@ llm-query-utils/
 
 ### `query.py` — Core routing
 
-- **`run_query()`**: Synchronous entrypoint. Routes to Codex CLI, Agent SDK, or LiteLLM based on model/options. Handles retries (0s, 30s, 60s, 120s), extended thinking setup, and temperature disabling for reasoning models (o1/o3/gpt-5).
+- **`run_query()`**: Synchronous entrypoint. Routes to Codex CLI for `gpt-5*` models when `use_codex_sdk=True`, Agent SDK for Claude, or LiteLLM otherwise. Handles retries (0s, 30s, 60s, 120s), extended thinking setup, and temperature disabling for reasoning models (o1/o3/gpt-5).
 - **`_codex_sdk_query()`**: Async Codex transport wrapper using `codex exec` + ChatGPT-auth preflight (`codex login status`). Supports plain and structured output (`--output-schema`), and usage callback mapping from JSON events.
 - **`_agent_sdk_query()`**: Async Agent SDK handler. Streams messages, counts tool calls, extracts structured output via `output_format`.
 

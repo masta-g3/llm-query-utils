@@ -23,6 +23,54 @@ def test_routes_to_codex_when_enabled(monkeypatch):
 
     result = query_module.run_query(
         user_message="hello",
+        llm_model="gpt-5.3-codex",
+        use_codex_sdk=True,
+        use_agent_sdk=False,
+    )
+
+    assert result == "codex-path"
+
+
+def test_routes_any_gpt5_model_to_codex_when_enabled(monkeypatch):
+    async def fake_codex(*args, **kwargs):
+        return "codex-path"
+
+    monkeypatch.setattr(query_module, "_codex_sdk_query", fake_codex)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="gpt-5-mini",
+        use_codex_sdk=True,
+        use_agent_sdk=False,
+    )
+
+    assert result == "codex-path"
+
+
+def test_routes_prefixed_gpt5_model_to_codex_when_enabled(monkeypatch):
+    async def fake_codex(*args, **kwargs):
+        return "codex-path"
+
+    monkeypatch.setattr(query_module, "_codex_sdk_query", fake_codex)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="chatgpt/gpt-5.4",
+        use_codex_sdk=True,
+        use_agent_sdk=False,
+    )
+
+    assert result == "codex-path"
+
+
+def test_routes_to_codex_with_legacy_model_alias(monkeypatch):
+    async def fake_codex(*args, **kwargs):
+        return "codex-path"
+
+    monkeypatch.setattr(query_module, "_codex_sdk_query", fake_codex)
+
+    result = query_module.run_query(
+        user_message="hello",
         llm_model="gpt-5-codex",
         use_codex_sdk=True,
         use_agent_sdk=False,
@@ -53,7 +101,7 @@ def test_routes_to_litellm_when_codex_disabled(monkeypatch):
 
     result = query_module.run_query(
         user_message="hello",
-        llm_model="gpt-5-codex",
+        llm_model="gpt-5.3-codex",
         use_codex_sdk=False,
         use_agent_sdk=False,
     )
@@ -61,11 +109,31 @@ def test_routes_to_litellm_when_codex_disabled(monkeypatch):
     assert result == "litellm-path"
 
 
+def test_chatgpt_provider_routes_to_litellm(monkeypatch):
+    captured = {}
+
+    def fake_completion(*args, **kwargs):
+        captured["model"] = kwargs["model"]
+        return _fake_completion()
+
+    monkeypatch.setattr(query_module, "completion", fake_completion)
+    monkeypatch.setattr(query_module, "_log_usage", lambda *args, **kwargs: None)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="chatgpt/gpt-5.4",
+        use_codex_sdk=False,
+    )
+
+    assert result == "litellm-path"
+    assert captured["model"] == "chatgpt/gpt-5.4"
+
+
 def test_codex_route_rejects_sdk_tools():
     try:
         query_module.run_query(
             user_message="hello",
-            llm_model="gpt-5-codex",
+            llm_model="gpt-5.3-codex",
             use_codex_sdk=True,
             use_agent_sdk=False,
             sdk_allowed_tools=["Read"],
