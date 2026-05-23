@@ -1,7 +1,7 @@
 [project]
 name = "llm-query-utils"
 version = "0.1.0"
-description = "Minimal LLM query routing via Claude Agent SDK and LiteLLM/Instructor"
+description = "Minimal LLM query routing via CLI/SDK transports and LiteLLM/Instructor"
 readme = "README.md"
 authors = [
     { name = "Manuel Rueda", email = "manolorueda@gmail.com" }

@@ -95,6 +95,83 @@ def test_routes_to_agent_sdk_for_claude(monkeypatch):
     assert result == "agent-path"
 
 
+def test_routes_to_pi_when_enabled(monkeypatch):
+    async def fake_pi(*args, **kwargs):
+        return "pi-path"
+
+    monkeypatch.setattr(query_module, "_pi_sdk_query", fake_pi)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="anthropic/claude-sonnet-4-5",
+        use_pi_sdk=True,
+    )
+
+    assert result == "pi-path"
+
+
+def test_pi_route_wins_over_claude_agent_when_enabled(monkeypatch):
+    async def fake_pi(*args, **kwargs):
+        return "pi-path"
+
+    async def fake_agent(*args, **kwargs):
+        return "agent-path"
+
+    monkeypatch.setattr(query_module, "_pi_sdk_query", fake_pi)
+    monkeypatch.setattr(query_module, "_agent_sdk_query", fake_agent)
+
+    result = query_module.run_query(
+        user_message="hello",
+        llm_model="claude-3-5-sonnet",
+        use_pi_sdk=True,
+        use_agent_sdk=True,
+    )
+
+    assert result == "pi-path"
+
+
+def test_pi_route_rejects_messages():
+    try:
+        query_module.run_query(
+            messages=[{"role": "user", "content": "hello"}],
+            llm_model="claude-3-5-sonnet",
+            use_pi_sdk=True,
+        )
+    except ValueError as exc:
+        assert "messages is not supported" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for messages + use_pi_sdk")
+
+
+def test_pi_route_rejects_sdk_tools():
+    try:
+        query_module.run_query(
+            user_message="hello",
+            llm_model="claude-3-5-sonnet",
+            use_pi_sdk=True,
+            sdk_allowed_tools=["Read"],
+        )
+    except ValueError as exc:
+        assert "sdk_allowed_tools is not supported" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for sdk_allowed_tools + use_pi_sdk")
+
+
+def test_pi_route_rejects_extended_thinking_options():
+    try:
+        query_module.run_query(
+            user_message="hello",
+            llm_model="claude-3-5-sonnet",
+            use_pi_sdk=True,
+            enable_extended_thinking=True,
+            pi_options={"thinking": "high"},
+        )
+    except ValueError as exc:
+        assert "extended thinking options are not supported" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for extended thinking + use_pi_sdk")
+
+
 def test_routes_to_litellm_when_codex_disabled(monkeypatch):
     monkeypatch.setattr(query_module, "completion", _fake_completion)
     monkeypatch.setattr(query_module, "_log_usage", lambda *args, **kwargs: None)

@@ -1,9 +1,10 @@
 # llm-query-utils
 
-Minimal LLM query routing via Claude Agent SDK and LiteLLM/Instructor.
+Minimal LLM query routing via CLI/SDK transports and LiteLLM/Instructor.
 
 A single `run_query()` entrypoint that routes to the right backend:
-- **`gpt-5*` model + `use_codex_sdk=True`** -> Codex CLI (ChatGPT login)
+- **`use_pi_sdk=True`** → Pi CLI JSON mode
+- **`gpt-5*` model + `use_codex_sdk=True`** → Codex CLI (ChatGPT login)
 - **Claude models** → Agent SDK (structured output, tool use)
 - **Everything else** → LiteLLM/Instructor (OpenAI-compatible)
 
@@ -56,6 +57,15 @@ answer = run_query(
     use_codex_sdk=True,
     use_agent_sdk=False,
 )
+
+# Pi CLI route (uses local Pi configuration/auth)
+answer = run_query(
+    user_message="Reply with exactly: pi_ok",
+    llm_model="anthropic/claude-sonnet-4-5",
+    use_pi_sdk=True,
+    use_agent_sdk=False,
+    pi_options={"timeout": 120},
+)
 ```
 
 ## Environment Variables
@@ -81,11 +91,20 @@ Codex route auth is different:
 If not logged in, `run_query()` raises:
 - `Codex CLI is not authenticated. Run codex login with ChatGPT before using use_codex_sdk=True.`
 
+Pi route auth/config is handled by the local `pi` CLI:
+- install/configure Pi separately
+- authenticate or set provider API keys as Pi expects
+- call `run_query(... use_pi_sdk=True, llm_model="anthropic/claude-sonnet-4-5")`
+- by default the Pi route is ephemeral, disables Pi tools, and disables discovered resources for deterministic query behavior
+- structured output is requested through prompt instructions and validated locally with Pydantic
+
+Supported `pi_options` keys: `model`, `provider`, `thinking`, `tools`, `timeout`, `cwd`, `isolate_resources`, `no_session`.
+
 ## Modules
 
 | Module | Purpose |
 |--------|---------|
-| `query.py` | `run_query()` — Codex/Agent/LiteLLM routing, retries, extended thinking |
+| `query.py` | `run_query()` — Pi/Codex/Agent/LiteLLM routing, retries, extended thinking |
 | `config.py` | Default model constants |
 | `cache.py` | Anthropic prompt caching helpers |
 | `vision.py` | Multi-modal message formatting |

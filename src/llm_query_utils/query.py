@@ -30,6 +30,16 @@ warnings.filterwarnings("ignore", message="Valid config keys have changed in V2:
 logger = logging.getLogger(__name__)
 
 CODEX_MODEL_PREFIXES = ("gpt-5",)
+PI_OPTION_KEYS = {
+    "model",
+    "provider",
+    "thinking",
+    "tools",
+    "timeout",
+    "cwd",
+    "isolate_resources",
+    "no_session",
+}
 
 
 def _calculate_usage_costs(
@@ -439,6 +449,257 @@ async def _codex_sdk_query(
     return result
 
 
+def _validate_pi_options(pi_options: Optional[dict]) -> dict:
+    options = {} if pi_options is None else pi_options
+    if not isinstance(options, dict):
+        raise ValueError("pi_options must be a dictionary when provided")
+
+    unknown_keys = sorted(set(options) - PI_OPTION_KEYS)
+    if unknown_keys:
+        raise ValueError(f"Unsupported pi_options: {', '.join(unknown_keys)}")
+
+    for key in ("model", "provider", "thinking", "cwd"):
+        if options.get(key) is not None and not isinstance(options[key], str):
+            raise ValueError(f"pi_options.{key} must be a string when provided")
+
+    tools = options.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
+            raise ValueError("pi_options.tools must be a list of strings when provided")
+
+    timeout = options.get("timeout")
+    if timeout is not None and (not isinstance(timeout, int) or isinstance(timeout, bool)):
+        raise ValueError("pi_options.timeout must be an integer when provided")
+
+    for key in ("isolate_resources", "no_session"):
+        if options.get(key) is not None and not isinstance(options[key], bool):
+            raise ValueError(f"pi_options.{key} must be a boolean when provided")
+
+    return options
+
+
+def _build_pi_structured_system_message(
+    system_message: Optional[str],
+    output_schema: Optional[Type[BaseModel]],
+) -> Optional[str]:
+    if output_schema is None:
+        return system_message
+
+    instruction = (
+        "Return only valid JSON matching this JSON Schema. "
+        "Do not include Markdown fences or explanatory text.\n"
+        f"{json.dumps(output_schema.model_json_schema(), separators=(',', ':'))}"
+    )
+    if system_message:
+        return f"{system_message}\n\n{instruction}"
+    return instruction
+
+
+def _build_pi_command(
+    llm_model: str,
+    system_message: Optional[str],
+    user_message: str,
+    pi_options: Optional[dict] = None,
+) -> tuple[list[str], Optional[int], Optional[str]]:
+    options = _validate_pi_options(pi_options)
+    cmd = ["pi", "--mode", "json"]
+
+    if options.get("no_session", True):
+        cmd.append("--no-session")
+
+    if options.get("isolate_resources", True):
+        cmd.extend([
+            "--no-extensions",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-context-files",
+        ])
+
+    tools = options.get("tools")
+    if tools:
+        cmd.extend(["--tools", ",".join(tools)])
+    else:
+        cmd.append("--no-tools")
+
+    provider = options.get("provider")
+    if provider:
+        cmd.extend(["--provider", provider])
+
+    model_name = options.get("model") or llm_model
+    if model_name:
+        cmd.extend(["--model", model_name])
+
+    thinking = options.get("thinking")
+    if thinking:
+        cmd.extend(["--thinking", thinking])
+
+    if system_message:
+        cmd.extend(["--system-prompt", system_message])
+
+    cmd.append(user_message)
+    return cmd, options.get("timeout"), options.get("cwd")
+
+
+def _extract_pi_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return ""
+
+
+def _parse_pi_event_stream(event_stream: str) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+    text = None
+    usage = None
+    error_message = None
+    saw_message_end = False
+
+    def capture_message(message: dict) -> bool:
+        nonlocal text, usage
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            return False
+        message_text = _extract_pi_text(message)
+        if message_text:
+            text = message_text
+        message_usage = message.get("usage")
+        if isinstance(message_usage, dict):
+            usage = message_usage
+        return bool(message_text)
+
+    for line in event_stream.splitlines():
+        raw = line.strip()
+        if not raw or not raw.startswith("{"):
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(payload.get("error"), str):
+            error_message = payload["error"]
+        elif isinstance(payload.get("error"), dict):
+            error_message = payload["error"].get("message") or error_message
+        elif isinstance(payload.get("message"), str) and payload.get("type") == "error":
+            error_message = payload["message"]
+
+        event_type = payload.get("type")
+        if event_type == "message_end":
+            saw_message_end = capture_message(payload.get("message") or {}) or saw_message_end
+        elif event_type == "agent_end" and not saw_message_end:
+            messages = payload.get("messages") or []
+            if isinstance(messages, list):
+                for message in messages:
+                    if capture_message(message):
+                        break
+        elif event_type == "compaction_end" and payload.get("errorMessage"):
+            error_message = payload["errorMessage"]
+        elif event_type == "message_update":
+            assistant_event = payload.get("assistantMessageEvent") or {}
+            if isinstance(assistant_event, dict) and assistant_event.get("type") == "error":
+                error_message = assistant_event.get("message") or error_message
+
+    return text, usage, error_message
+
+
+def _fire_pi_usage(
+    usage: Optional[dict],
+    llm_model: str,
+    process_id: Optional[str],
+) -> None:
+    if not usage:
+        return
+
+    cost = usage.get("cost") or {}
+    fire_usage_callback(UsageData(
+        model=llm_model,
+        process_id=process_id,
+        prompt_tokens=usage.get("input", 0),
+        completion_tokens=usage.get("output", 0),
+        prompt_cost=cost.get("input", 0),
+        completion_cost=cost.get("output", 0),
+        cache_creation_input_tokens=usage.get("cacheWrite", 0),
+        cache_read_input_tokens=usage.get("cacheRead", 0),
+        cache_creation_cost=cost.get("cacheWrite"),
+        cache_read_cost=cost.get("cacheRead"),
+    ))
+
+
+def _run_pi_cli(
+    llm_model: str,
+    system_message: Optional[str],
+    user_message: str,
+    pi_options: Optional[dict] = None,
+) -> tuple[str, Optional[dict], str]:
+    cmd, timeout, cwd = _build_pi_command(llm_model, system_message, user_message, pi_options)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Pi CLI timed out after {timeout} seconds") from exc
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Pi CLI not found. Install pi before using use_pi_sdk=True."
+        ) from exc
+
+    event_stream = "\n".join(
+        part for part in (result.stdout, result.stderr) if part and part.strip()
+    )
+    output_text, usage, error_message = _parse_pi_event_stream(event_stream)
+
+    if result.returncode != 0:
+        if error_message:
+            raise RuntimeError(f"Pi CLI error: {error_message}")
+        details = event_stream.strip() or "unknown error"
+        if len(details) > 1000:
+            details = f"...{details[-1000:]}"
+        raise RuntimeError(f"Pi CLI error: {details}")
+
+    if not output_text or not output_text.strip():
+        raise RuntimeError("Pi CLI returned empty response")
+
+    return output_text.strip(), usage, event_stream
+
+
+async def _pi_sdk_query(
+    system_message: Optional[str],
+    user_message: str,
+    llm_model: str,
+    output_schema: Optional[Type[BaseModel]] = None,
+    process_id: str = None,
+    pi_options: Optional[dict] = None,
+) -> Union[str, BaseModel]:
+    if user_message is None:
+        raise ValueError("user_message is required when use_pi_sdk=True")
+
+    system_message = _build_pi_structured_system_message(system_message, output_schema)
+    output_text, usage, _ = await asyncio.to_thread(
+        _run_pi_cli,
+        llm_model,
+        system_message,
+        user_message,
+        pi_options,
+    )
+
+    _fire_pi_usage(usage, llm_model, process_id)
+    logger.info(f"Pi query complete: {len(output_text)} chars")
+
+    if output_schema is not None:
+        return output_schema.model_validate_json(output_text)
+    return output_text
+
+
 def run_query(
     system_message: Optional[str] = None,
     user_message: Optional[str] = None,
@@ -454,8 +715,10 @@ def run_query(
     extended_thinking_beta: Optional[str] = None,
     use_agent_sdk: bool = True,
     use_codex_sdk: bool = False,
+    use_pi_sdk: bool = False,
     sdk_allowed_tools: Optional[list[str]] = None,
     codex_options: Optional[dict] = None,
+    pi_options: Optional[dict] = None,
     **kwargs,
 ) -> Union[BaseModel, str]:
     """Run an LLM query, routing through Agent SDK (Claude) or LiteLLM/Instructor (others).
@@ -465,6 +728,7 @@ def run_query(
             Automatically disabled for: custom messages, extended thinking, non-Claude models.
         use_codex_sdk: Route query through Codex CLI transport (default: False).
             Supported for gpt-5* models and single-turn user_message input.
+        use_pi_sdk: Route query through Pi CLI JSON mode (default: False).
         sdk_allowed_tools: Tools the agent can use (e.g., ["Read"] for image analysis).
     """
     thinking_requested = (
@@ -472,6 +736,18 @@ def run_query(
         or thinking_options is not None
         or extended_thinking_budget_tokens is not None
     )
+
+    if use_pi_sdk:
+        if messages is not None:
+            raise ValueError("messages is not supported when use_pi_sdk=True")
+        if sdk_allowed_tools:
+            raise ValueError(
+                "sdk_allowed_tools is not supported when use_pi_sdk=True; use pi_options.tools"
+            )
+        if thinking_requested or extended_thinking_beta is not None:
+            raise ValueError(
+                "extended thinking options are not supported when use_pi_sdk=True; use pi_options.thinking"
+            )
 
     use_codex_route = (
         use_codex_sdk
@@ -494,6 +770,16 @@ def run_query(
         raise ValueError(
             "Either 'messages' parameter or 'user_message' parameter must be provided"
         )
+
+    if use_pi_sdk:
+        return asyncio.run(_pi_sdk_query(
+            system_message,
+            user_message,
+            llm_model,
+            output_schema=model,
+            process_id=process_id,
+            pi_options=pi_options,
+        ))
 
     if use_codex_route:
         return asyncio.run(_codex_sdk_query(

@@ -618,3 +618,185 @@ def test_codex_options_model_must_be_supported():
                 codex_options={"model": "codex-mini-latest"},
             )
         )
+
+
+def test_parse_pi_event_stream_extracts_text_and_usage():
+    event_stream = "\n".join([
+        '{"type":"session","version":3,"id":"s1"}',
+        '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"PI_OK"}],"usage":{"input":10,"output":3,"cacheRead":2,"cacheWrite":1,"cost":{"input":0.01,"output":0.02,"cacheRead":0.001,"cacheWrite":0.002,"total":0.033}}}}',
+        '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"WRONG"}],"usage":{"input":99,"output":99}}]}',
+    ])
+
+    text, usage, error = query_module._parse_pi_event_stream(event_stream)
+
+    assert text == "PI_OK"
+    assert usage["input"] == 10
+    assert usage["output"] == 3
+    assert error is None
+
+
+def test_parse_pi_event_stream_falls_back_to_agent_end():
+    event_stream = "\n".join([
+        '{"type":"session","version":3,"id":"s1"}',
+        '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"fallback"}],"usage":{"input":4,"output":1}}]}',
+    ])
+
+    text, usage, error = query_module._parse_pi_event_stream(event_stream)
+
+    assert text == "fallback"
+    assert usage == {"input": 4, "output": 1}
+    assert error is None
+
+
+def test_fire_pi_usage_maps_tokens_costs_and_cache():
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    query_module._fire_pi_usage(
+        {
+            "input": 10,
+            "output": 3,
+            "cacheRead": 2,
+            "cacheWrite": 1,
+            "cost": {
+                "input": 0.01,
+                "output": 0.02,
+                "cacheRead": 0.001,
+                "cacheWrite": 0.002,
+            },
+        },
+        llm_model="anthropic/claude-sonnet-4-5",
+        process_id="p-pi",
+    )
+
+    assert len(usage_events) == 1
+    assert usage_events[0].model == "anthropic/claude-sonnet-4-5"
+    assert usage_events[0].process_id == "p-pi"
+    assert usage_events[0].prompt_tokens == 10
+    assert usage_events[0].completion_tokens == 3
+    assert usage_events[0].cache_read_input_tokens == 2
+    assert usage_events[0].cache_creation_input_tokens == 1
+    assert usage_events[0].prompt_cost == 0.01
+    assert usage_events[0].completion_cost == 0.02
+    assert usage_events[0].cache_read_cost == 0.001
+    assert usage_events[0].cache_creation_cost == 0.002
+
+
+def test_build_pi_command_defaults_to_safe_query_mode():
+    cmd, timeout, cwd = query_module._build_pi_command(
+        llm_model="anthropic/claude-sonnet-4-5",
+        system_message="system rules",
+        user_message="hello",
+        pi_options={"timeout": 90, "cwd": "/tmp"},
+    )
+
+    assert cmd == [
+        "pi",
+        "--mode",
+        "json",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-context-files",
+        "--no-tools",
+        "--model",
+        "anthropic/claude-sonnet-4-5",
+        "--system-prompt",
+        "system rules",
+        "hello",
+    ]
+    assert timeout == 90
+    assert cwd == "/tmp"
+
+
+def test_pi_options_validation_rejects_bad_types():
+    with pytest.raises(ValueError, match="pi_options must be a dictionary"):
+        query_module._build_pi_command(
+            llm_model="claude",
+            system_message=None,
+            user_message="hello",
+            pi_options=[],
+        )
+
+    with pytest.raises(ValueError, match="pi_options.tools"):
+        query_module._build_pi_command(
+            llm_model="claude",
+            system_message=None,
+            user_message="hello",
+            pi_options={"tools": "read"},
+        )
+
+    with pytest.raises(ValueError, match="pi_options.timeout"):
+        query_module._build_pi_command(
+            llm_model="claude",
+            system_message=None,
+            user_message="hello",
+            pi_options={"timeout": "30"},
+        )
+
+
+def test_pi_options_validation_rejects_unknown_keys():
+    with pytest.raises(ValueError, match="Unsupported pi_options"):
+        query_module._build_pi_command(
+            llm_model="claude",
+            system_message=None,
+            user_message="hello",
+            pi_options={"extra_args": ["--verbose"]},
+        )
+
+
+def test_pi_query_parses_structured_output_and_fires_usage(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+    captured = {}
+
+    def fake_run(model, system_message, user_message, pi_options):
+        captured["system_message"] = system_message
+        return (
+            '{"status":"ok","count":7}',
+            {"input": 6, "output": 2, "cost": {"input": 0.1, "output": 0.2}},
+            "",
+        )
+
+    monkeypatch.setattr(query_module, "_run_pi_cli", fake_run)
+
+    result = asyncio.run(
+        query_module._pi_sdk_query(
+            system_message="be precise",
+            user_message="return json",
+            llm_model="anthropic/claude-sonnet-4-5",
+            output_schema=OutputSchema,
+            process_id="p-pi",
+        )
+    )
+
+    assert isinstance(result, OutputSchema)
+    assert result.count == 7
+    assert "Return only valid JSON" in captured["system_message"]
+    assert len(usage_events) == 1
+    assert usage_events[0].prompt_tokens == 6
+    assert usage_events[0].completion_tokens == 2
+
+
+def test_run_pi_cli_handles_subprocess_failures(monkeypatch):
+    def missing_pi(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(query_module.subprocess, "run", missing_pi)
+    with pytest.raises(RuntimeError, match="Pi CLI not found"):
+        query_module._run_pi_cli("claude", None, "hello")
+
+    def timeout(*args, **kwargs):
+        raise query_module.subprocess.TimeoutExpired(cmd=["pi"], timeout=5)
+
+    monkeypatch.setattr(query_module.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="timed out after 5 seconds"):
+        query_module._run_pi_cli("claude", None, "hello", {"timeout": 5})
+
+    def failed(*args, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="bad pi")
+
+    monkeypatch.setattr(query_module.subprocess, "run", failed)
+    with pytest.raises(RuntimeError, match="Pi CLI error: bad pi"):
+        query_module._run_pi_cli("claude", None, "hello")
