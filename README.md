@@ -87,6 +87,7 @@ Codex route auth is different:
 - then call `run_query(... use_codex_sdk=True, llm_model="gpt-5.3-codex")`
 - any model whose basename starts with `gpt-5` is routed through Codex when `use_codex_sdk=True`, including provider-prefixed names like `chatgpt/gpt-5.4`
 - legacy alias `gpt-5-codex` is still accepted for compatibility
+- usage callbacks include exact Codex token counts plus LiteLLM API-equivalent estimated costs; these are not actual ChatGPT subscription spend
 
 If not logged in, `run_query()` raises:
 - `Codex CLI is not authenticated. Run codex login with ChatGPT before using use_codex_sdk=True.`
@@ -108,4 +109,4 @@ Supported `pi_options` keys: `model`, `provider`, `thinking`, `tools`, `timeout`
 | `config.py` | Default model constants |
 | `cache.py` | Anthropic prompt caching helpers |
 | `vision.py` | Multi-modal message formatting |
-| `usage.py` | Token/cost tracking via callback (LiteLLM pricing on LiteLLM route) |
+| `usage.py` | Token/cost tracking via callback; Codex costs are LiteLLM API-equivalent estimates, not subscription spend |

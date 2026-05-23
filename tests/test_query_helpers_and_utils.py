@@ -370,9 +370,14 @@ def test_parse_codex_event_stream_extracts_usage_and_error():
     assert error == "runtime failure"
 
 
-def test_fire_codex_usage_accepts_both_cache_read_token_keys():
+def test_fire_codex_usage_accepts_both_cache_read_token_keys(monkeypatch):
     usage_events = []
     set_usage_callback(lambda data: usage_events.append(data))
+    monkeypatch.setattr(
+        query_module,
+        "_calculate_codex_usage_costs",
+        lambda usage, llm_model: (0.1, 0.2, None, 0.3),
+    )
 
     query_module._fire_codex_usage(
         {"input_tokens": 2, "output_tokens": 1, "cache_read_input_tokens": 9},
@@ -387,6 +392,95 @@ def test_fire_codex_usage_accepts_both_cache_read_token_keys():
 
     assert usage_events[0].cache_read_input_tokens == 9
     assert usage_events[1].cache_read_input_tokens == 7
+    assert usage_events[0].prompt_cost == 0.1
+    assert usage_events[0].completion_cost == 0.2
+    assert usage_events[0].cache_read_cost == 0.3
+
+
+def test_fire_codex_usage_emits_api_equivalent_costs(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+    monkeypatch.setattr(
+        query_module,
+        "_calculate_usage_costs",
+        lambda usage, llm_model: (1.25, 2.5, None, 0.75),
+    )
+
+    query_module._fire_codex_usage(
+        {"input_tokens": 1000, "output_tokens": 200, "cached_input_tokens": 300},
+        llm_model="gpt-5.5",
+        process_id="p-1",
+    )
+
+    assert len(usage_events) == 1
+    assert usage_events[0].prompt_tokens == 1000
+    assert usage_events[0].completion_tokens == 200
+    assert usage_events[0].cache_read_input_tokens == 300
+    assert usage_events[0].prompt_cost == 1.25
+    assert usage_events[0].completion_cost == 2.5
+    assert usage_events[0].cache_read_cost == 0.75
+
+
+def test_fire_codex_usage_uses_model_basename_for_pricing(monkeypatch):
+    priced_models = []
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    def fake_calculate_usage_costs(usage, llm_model):
+        priced_models.append(llm_model)
+        return 1.0, 2.0, None, None
+
+    monkeypatch.setattr(query_module, "_calculate_usage_costs", fake_calculate_usage_costs)
+
+    query_module._fire_codex_usage(
+        {"input_tokens": 10, "output_tokens": 5},
+        llm_model="chatgpt/gpt-5.5",
+        process_id="p-1",
+    )
+
+    assert priced_models == ["gpt-5.5"]
+    assert usage_events[0].model == "chatgpt/gpt-5.5"
+
+
+def test_fire_codex_usage_keeps_tokens_when_pricing_missing(monkeypatch, caplog):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    def raise_unknown_model(*args, **kwargs):
+        raise Exception("This model isn't mapped yet")
+
+    monkeypatch.setattr(query_module, "_calculate_usage_costs", raise_unknown_model)
+
+    with caplog.at_level("WARNING"):
+        query_module._fire_codex_usage(
+            {"input_tokens": 10, "output_tokens": 5, "cached_input_tokens": 3},
+            llm_model="gpt-5-new",
+            process_id="p-1",
+        )
+
+    assert len(usage_events) == 1
+    assert usage_events[0].prompt_tokens == 10
+    assert usage_events[0].completion_tokens == 5
+    assert usage_events[0].cache_read_input_tokens == 3
+    assert usage_events[0].prompt_cost == 0
+    assert usage_events[0].completion_cost == 0
+    assert "pricing unavailable" in caplog.text
+
+
+def test_fire_codex_usage_raises_unexpected_pricing_errors(monkeypatch):
+    set_usage_callback(lambda data: None)
+
+    def raise_bug(*args, **kwargs):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(query_module, "_calculate_usage_costs", raise_bug)
+
+    with pytest.raises(RuntimeError, match="bug"):
+        query_module._fire_codex_usage(
+            {"input_tokens": 10, "output_tokens": 5},
+            llm_model="gpt-5.5",
+            process_id="p-1",
+        )
 
 
 def test_add_cache_control_only_for_supported_models_and_valid_index():
@@ -588,12 +682,20 @@ def test_codex_options_extra_args_must_be_list():
 def test_codex_options_accepts_any_gpt5_model(monkeypatch):
     monkeypatch.setattr(query_module, "_run_codex_login_preflight", lambda: None)
     captured = {}
+    priced_models = []
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
 
     def fake_exec(model, prompt, output_schema, extra_args):
         captured["model"] = model
-        return "ok", None, ""
+        return "ok", {"input_tokens": 10, "output_tokens": 5}, ""
+
+    def fake_calculate_usage_costs(usage, llm_model):
+        priced_models.append(llm_model)
+        return 1.0, 2.0, None, None
 
     monkeypatch.setattr(query_module, "_run_codex_exec", fake_exec)
+    monkeypatch.setattr(query_module, "_calculate_usage_costs", fake_calculate_usage_costs)
 
     result = asyncio.run(
         query_module._codex_sdk_query(
@@ -606,6 +708,8 @@ def test_codex_options_accepts_any_gpt5_model(monkeypatch):
 
     assert result == "ok"
     assert captured["model"] == "gpt-5.4"
+    assert priced_models == ["gpt-5.4"]
+    assert usage_events[0].model == "gpt-5.4"
 
 
 def test_codex_options_model_must_be_supported():

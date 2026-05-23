@@ -8,10 +8,12 @@ import tempfile
 import time
 import traceback
 import warnings
+from types import SimpleNamespace
 from typing import Type, Optional, Union
 
 from pydantic import BaseModel
 from litellm import completion, cost_per_token, get_model_info
+from litellm.exceptions import BadRequestError
 import instructor
 from claude_agent_sdk import (
     query as agent_sdk_query,
@@ -302,23 +304,69 @@ def _to_codex_strict_schema(schema: dict) -> dict:
     return strict_schema
 
 
+def _codex_usage_to_namespace(usage: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        prompt_tokens=usage.get("input_tokens", 0),
+        completion_tokens=usage.get("output_tokens", 0),
+        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+        cache_read_input_tokens=usage.get(
+            "cached_input_tokens",
+            usage.get("cache_read_input_tokens", 0),
+        ),
+    )
+
+
+def _codex_pricing_model(llm_model: str) -> str:
+    return (llm_model or "").split("/")[-1]
+
+
+def _is_pricing_lookup_error(exc: Exception) -> bool:
+    message = str(exc)
+    return isinstance(exc, BadRequestError) or "isn't mapped yet" in message
+
+
+def _calculate_codex_usage_costs(
+    usage: SimpleNamespace,
+    llm_model: str,
+) -> tuple[float, float, Optional[float], Optional[float]]:
+    try:
+        return _calculate_usage_costs(usage, _codex_pricing_model(llm_model))
+    except Exception as exc:
+        if not _is_pricing_lookup_error(exc):
+            raise
+        logger.warning(
+            "Codex API-equivalent pricing unavailable for model=%s; logging zero cost",
+            llm_model,
+        )
+        return 0, 0, None, None
+
+
 def _fire_codex_usage(
     usage: Optional[dict],
     llm_model: str,
     process_id: Optional[str],
+    pricing_model: Optional[str] = None,
+    logged_model: Optional[str] = None,
 ) -> None:
     if not usage:
         return
 
+    codex_usage = _codex_usage_to_namespace(usage)
+    prompt_cost, completion_cost, cache_creation_cost, cache_read_cost = (
+        _calculate_codex_usage_costs(codex_usage, pricing_model or llm_model)
+    )
+
     fire_usage_callback(UsageData(
-        model=llm_model,
+        model=logged_model or llm_model,
         process_id=process_id,
-        prompt_tokens=usage.get("input_tokens", 0),
-        completion_tokens=usage.get("output_tokens", 0),
-        prompt_cost=0,
-        completion_cost=0,
-        cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
-        cache_read_input_tokens=usage.get("cached_input_tokens", usage.get("cache_read_input_tokens", 0)),
+        prompt_tokens=codex_usage.prompt_tokens,
+        completion_tokens=codex_usage.completion_tokens,
+        prompt_cost=prompt_cost,
+        completion_cost=completion_cost,
+        cache_creation_input_tokens=codex_usage.cache_creation_input_tokens,
+        cache_read_input_tokens=codex_usage.cache_read_input_tokens,
+        cache_creation_cost=cache_creation_cost,
+        cache_read_cost=cache_read_cost,
     ))
 
 
@@ -443,7 +491,13 @@ async def _codex_sdk_query(
     else:
         result = output_text
 
-    _fire_codex_usage(usage, llm_model, process_id)
+    _fire_codex_usage(
+        usage,
+        llm_model,
+        process_id,
+        pricing_model=model,
+        logged_model=model if options.get("model") else None,
+    )
     logger.info(f"Codex query complete: {len(output_text)} chars")
 
     return result

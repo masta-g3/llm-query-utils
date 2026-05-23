@@ -16,7 +16,7 @@ Reusable LLM query layer extracted from [llmpedia-workflows](https://github.com/
 | Claude backend | `claude-agent-sdk` | Native structured output, tool use |
 | Other models | `litellm>=1.81.11` + `instructor` | OpenAI-compatible and `chatgpt/...` subscription access, structured output via tool-calling |
 | Schemas | `pydantic` v2 | Shared structured-output validation across backends |
-| Cost tracking | `litellm` pricing utilities | Per-call token/cost calculation |
+| Cost tracking | `litellm` pricing utilities | Per-call token/cost calculation; Codex costs are API-equivalent estimates |
 | Packaging | `uv` + `uv_build` | Fast, lockfile-based |
 
 ## Architecture
@@ -80,7 +80,7 @@ llm-query-utils/
 
 - **`run_query()`**: Synchronous entrypoint. Routes to Pi CLI when `use_pi_sdk=True`, Codex CLI for `gpt-5*` models when `use_codex_sdk=True`, Agent SDK for Claude, or LiteLLM otherwise. Handles retries (0s, 30s, 60s, 120s), extended thinking setup, and temperature disabling for reasoning models (o1/o3/gpt-5).
 - **`_pi_sdk_query()`**: Async Pi CLI transport wrapper using `pi --mode json`. Defaults to `--no-session`, `--no-tools`, and isolated resources. Supports plain output and prompt-instructed structured output validated by Pydantic, and maps Pi message usage into the usage callback.
-- **`_codex_sdk_query()`**: Async Codex transport wrapper using `codex exec` + ChatGPT-auth preflight (`codex login status`). Supports plain and structured output (`--output-schema`), and usage callback mapping from JSON events.
+- **`_codex_sdk_query()`**: Async Codex transport wrapper using `codex exec` + ChatGPT-auth preflight (`codex login status`). Supports plain and structured output (`--output-schema`), maps token usage from JSON events, and prices usage with LiteLLM API-equivalent estimates using the actual executed GPT-5 model.
 - **`_agent_sdk_query()`**: Async Agent SDK handler. Streams messages, counts tool calls, extracts structured output via `output_format`.
 
 ### `usage.py` — Usage tracking
@@ -88,9 +88,10 @@ llm-query-utils/
 Consumer registers a callback via `set_usage_callback(fn)`. Query backends emit `UsageData` (tokens, costs, cache stats) through this callback, decoupling this package from any specific logging/DB implementation.
 
 Usage emission notes:
-- LiteLLM path emits usage from provider-reported token usage.
+- LiteLLM path emits usage from provider-reported token usage and LiteLLM pricing.
 - Pi path emits usage from Pi assistant message usage payloads.
-- Codex path emits usage from Codex event stream usage payloads.
+- Codex path emits exact token usage from Codex event stream payloads and fills cost fields with LiteLLM API-equivalent estimates. Those costs are reporting proxies for subscription-backed Codex calls, not actual ChatGPT subscription spend.
+- If LiteLLM does not know a Codex model's pricing yet, Codex usage still emits token counts with zero costs and logs a warning.
 - Agent SDK path emits one usage event when a terminal `ResultMessage` is received.
 - If Agent SDK omits usage payload fields, Agent usage falls back to zeros instead of skipping the callback event.
 
