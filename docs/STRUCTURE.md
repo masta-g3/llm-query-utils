@@ -46,11 +46,13 @@ flowchart TD
   - single-turn `user_message` flow (no `messages`)
   - existing extended thinking options are not enabled; use `pi_options={"thinking": "high"}` instead
   - `sdk_allowed_tools` is not provided; use `pi_options={"tools": [...]}` instead
+  - provider/model disambiguation is explicit via `pi_options`, for example `pi_options={"provider": "openai-codex", "timeout": 900}` for `llm_model="gpt-5.5"` when Pi should use its Codex-backed provider
 - Codex CLI when:
   - `use_codex_sdk=True`
   - `llm_model` basename starts with `gpt-5`, including provider-prefixed names like `chatgpt/gpt-5.4`
   - single-turn `user_message` flow (no `messages`)
   - extended thinking options are not enabled
+  - optional `codex_options={"timeout": 900}` bounds hung `codex exec` calls
 - Agent SDK for Claude models (default), but falls back to LiteLLM when:
 - Custom `messages` list is provided (multi-turn)
 - Extended thinking is enabled
@@ -79,8 +81,8 @@ llm-query-utils/
 ### `query.py` — Core routing
 
 - **`run_query()`**: Synchronous entrypoint. Routes to Pi CLI when `use_pi_sdk=True`, Codex CLI for `gpt-5*` models when `use_codex_sdk=True`, Agent SDK for Claude, or LiteLLM otherwise. Handles retries (0s, 30s, 60s, 120s), extended thinking setup, and temperature disabling for reasoning models (o1/o3/gpt-5).
-- **`_pi_sdk_query()`**: Async Pi CLI transport wrapper using `pi --mode json`. Defaults to `--no-session`, `--no-tools`, and isolated resources. Supports plain output and prompt-instructed structured output validated by Pydantic, and maps Pi message usage into the usage callback.
-- **`_codex_sdk_query()`**: Async Codex transport wrapper using `codex exec` + ChatGPT-auth preflight (`codex login status`). Supports plain and structured output (`--output-schema`), maps token usage from JSON events, and prices usage with LiteLLM API-equivalent estimates using the actual executed GPT-5 model.
+- **`_pi_sdk_query()`**: Async Pi CLI transport wrapper using `pi --mode json`. Defaults to `--no-session`, `--no-tools`, and isolated resources. Supports plain output and prompt-instructed structured output validated by Pydantic, and maps Pi message usage into the usage callback. Use `pi_options.provider`, `pi_options.thinking`, and `pi_options.timeout` for provider choice, thinking level, and process bounds.
+- **`_codex_sdk_query()`**: Async Codex transport wrapper using `codex exec` + ChatGPT-auth preflight (`codex login status`). Supports plain and structured output (`--output-schema`), maps token usage from JSON events, and prices usage with LiteLLM API-equivalent estimates using the actual executed GPT-5 model. Supports `codex_options.timeout` for hard process timeouts.
 - **`_agent_sdk_query()`**: Async Agent SDK handler. Streams messages, counts tool calls, extracts structured output via `output_format`.
 
 ### `usage.py` — Usage tracking

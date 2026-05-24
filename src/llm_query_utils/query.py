@@ -394,6 +394,7 @@ def _run_codex_exec(
     prompt: str,
     output_schema: Optional[Type[BaseModel]] = None,
     extra_args: Optional[list[str]] = None,
+    timeout: Optional[int] = None,
 ) -> tuple[str, Optional[dict], str]:
     schema_path = None
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt", delete=False) as output_file:
@@ -420,7 +421,17 @@ def _run_codex_exec(
 
     try:
         try:
-            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Codex CLI timed out after {timeout} seconds"
+            ) from exc
         except FileNotFoundError as exc:
             raise RuntimeError(
                 "Codex CLI not found. Install Codex CLI before using use_codex_sdk=True."
@@ -475,6 +486,10 @@ async def _codex_sdk_query(
     if extra_args is not None and not isinstance(extra_args, list):
         raise ValueError("codex_options.extra_args must be a list when provided")
 
+    timeout = options.get("timeout")
+    if timeout is not None and not isinstance(timeout, int):
+        raise ValueError("codex_options.timeout must be an integer when provided")
+
     prompt = _build_codex_prompt(system_message, user_message)
 
     await asyncio.to_thread(_run_codex_login_preflight)
@@ -484,6 +499,7 @@ async def _codex_sdk_query(
         prompt,
         output_schema,
         extra_args,
+        timeout,
     )
 
     if output_schema is not None:

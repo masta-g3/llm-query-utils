@@ -21,7 +21,7 @@ class StructuredReply(BaseModel):
 def test_live_codex_plain_text_regression():
     result = run_query(
         user_message="Return exactly this token and nothing else: CODEX_PLAIN_OK",
-        llm_model="gpt-5-codex",
+        llm_model="gpt-5.3-codex",
         use_codex_sdk=True,
         use_agent_sdk=False,
     )
@@ -33,7 +33,7 @@ def test_live_codex_structured_output_regression():
     result = run_query(
         user_message="Return status='ok' and count=7.",
         model=StructuredReply,
-        llm_model="gpt-5-codex",
+        llm_model="gpt-5.3-codex",
         use_codex_sdk=True,
         use_agent_sdk=False,
     )

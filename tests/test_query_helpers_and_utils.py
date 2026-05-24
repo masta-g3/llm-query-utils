@@ -618,7 +618,7 @@ def test_codex_query_parses_structured_output_and_fires_usage(monkeypatch):
     monkeypatch.setattr(
         query_module,
         "_run_codex_exec",
-        lambda model, prompt, output_schema, extra_args: (
+        lambda model, prompt, output_schema, extra_args, timeout=None: (
             '{"status":"ok","count":7}',
             {"input_tokens": 12, "output_tokens": 4, "cached_input_tokens": 2},
             "",
@@ -648,7 +648,7 @@ def test_codex_query_returns_text(monkeypatch):
     monkeypatch.setattr(
         query_module,
         "_run_codex_exec",
-        lambda model, prompt, output_schema, extra_args: (
+        lambda model, prompt, output_schema, extra_args, timeout=None: (
             "plain-text",
             {"input_tokens": 3, "output_tokens": 1},
             "",
@@ -686,7 +686,7 @@ def test_codex_options_accepts_any_gpt5_model(monkeypatch):
     usage_events = []
     set_usage_callback(lambda data: usage_events.append(data))
 
-    def fake_exec(model, prompt, output_schema, extra_args):
+    def fake_exec(model, prompt, output_schema, extra_args, timeout=None):
         captured["model"] = model
         return "ok", {"input_tokens": 10, "output_tokens": 5}, ""
 

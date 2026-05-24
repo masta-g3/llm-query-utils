@@ -66,6 +66,20 @@ answer = run_query(
     use_agent_sdk=False,
     pi_options={"timeout": 120},
 )
+
+# Pi route with an explicit provider/model/thinking level
+answer = run_query(
+    system_message="You are concise.",
+    user_message="Reply with exactly: pi_gpt_ok",
+    llm_model="gpt-5.5",
+    use_pi_sdk=True,
+    use_agent_sdk=False,
+    pi_options={
+        "provider": "openai-codex",
+        "timeout": 900,
+        "thinking": "high",
+    },
+)
 ```
 
 ## Environment Variables
@@ -85,6 +99,7 @@ Codex route auth is different:
 - authenticate once with `codex login`
 - verify with `codex login status` (must show `Logged in using ChatGPT`)
 - then call `run_query(... use_codex_sdk=True, llm_model="gpt-5.3-codex")`
+- pass `codex_options={"timeout": 900}` to fail a hung `codex exec` call clearly
 - any model whose basename starts with `gpt-5` is routed through Codex when `use_codex_sdk=True`, including provider-prefixed names like `chatgpt/gpt-5.4`
 - legacy alias `gpt-5-codex` is still accepted for compatibility
 - usage callbacks include exact Codex token counts plus LiteLLM API-equivalent estimated costs; these are not actual ChatGPT subscription spend
@@ -96,8 +111,10 @@ Pi route auth/config is handled by the local `pi` CLI:
 - install/configure Pi separately
 - authenticate or set provider API keys as Pi expects
 - call `run_query(... use_pi_sdk=True, llm_model="anthropic/claude-sonnet-4-5")`
+- set `pi_options={"provider": "openai-codex"}` when a model name like `gpt-5.5` must resolve to Pi's Codex-backed provider instead of another configured provider
+- use `pi_options={"thinking": "low"}` or `{"thinking": "high"}` for Pi thinking levels; provider kwargs like `reasoning_effort` are not translated by this package
 - by default the Pi route is ephemeral, disables Pi tools, and disables discovered resources for deterministic query behavior
-- structured output is requested through prompt instructions and validated locally with Pydantic
+- structured output is requested through prompt instructions and validated locally with Pydantic; use the LiteLLM/Instructor route when native tool-call schemas are required
 
 Supported `pi_options` keys: `model`, `provider`, `thinking`, `tools`, `timeout`, `cwd`, `isolate_resources`, `no_session`.
 
