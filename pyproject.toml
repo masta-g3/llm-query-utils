@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "litellm>=1.81.11",
+    "litellm>=1.81.11,<1.82",
     "instructor>=1.4",
     "claude-agent-sdk>=0.1.30",
     "pydantic>=2.0",
