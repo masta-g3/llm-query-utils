@@ -850,6 +850,32 @@ def test_pi_options_validation_rejects_unknown_keys():
         )
 
 
+def test_run_query_routes_structured_pi_public_path(monkeypatch):
+    async def fake_pi(system_message, user_message, llm_model, output_schema=None, process_id=None, pi_options=None):
+        assert system_message == "system"
+        assert user_message == "user"
+        assert llm_model == "gpt-5.4-mini"
+        assert output_schema is OutputSchema
+        assert process_id == "p-public"
+        assert pi_options == {"provider": "openai-codex"}
+        return OutputSchema(status="ok", count=7)
+
+    monkeypatch.setattr(query_module, "_pi_sdk_query", fake_pi)
+
+    result = query_module.run_query(
+        "system",
+        "user",
+        model=OutputSchema,
+        llm_model="gpt-5.4-mini",
+        process_id="p-public",
+        use_pi_sdk=True,
+        use_agent_sdk=False,
+        pi_options={"provider": "openai-codex"},
+    )
+
+    assert result == OutputSchema(status="ok", count=7)
+
+
 def test_pi_query_parses_structured_output_and_fires_usage(monkeypatch):
     usage_events = []
     set_usage_callback(lambda data: usage_events.append(data))
