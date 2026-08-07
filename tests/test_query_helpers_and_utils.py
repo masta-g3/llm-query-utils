@@ -752,6 +752,32 @@ def test_parse_pi_event_stream_falls_back_to_agent_end():
     assert error is None
 
 
+def test_parse_pi_event_stream_extracts_assistant_error_message():
+    event_stream = "\n".join([
+        '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"upstream unavailable"}}',
+        '{"type":"turn_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"upstream unavailable"}}',
+    ])
+
+    text, usage, error = query_module._parse_pi_event_stream(event_stream)
+
+    assert text is None
+    assert usage is None
+    assert error == "upstream unavailable"
+
+
+def test_parse_pi_event_stream_falls_back_to_text_deltas():
+    event_stream = "\n".join([
+        '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"part 1"}}',
+        '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":" part 2"}}',
+    ])
+
+    text, usage, error = query_module._parse_pi_event_stream(event_stream)
+
+    assert text == "part 1 part 2"
+    assert usage is None
+    assert error is None
+
+
 def test_fire_pi_usage_maps_tokens_costs_and_cache():
     usage_events = []
     set_usage_callback(lambda data: usage_events.append(data))
@@ -929,4 +955,24 @@ def test_run_pi_cli_handles_subprocess_failures(monkeypatch):
 
     monkeypatch.setattr(query_module.subprocess, "run", failed)
     with pytest.raises(RuntimeError, match="Pi CLI error: bad pi"):
+        query_module._run_pi_cli("claude", None, "hello")
+
+
+def test_run_pi_cli_reports_assistant_error_with_success_exit_code(monkeypatch):
+    event_stream = (
+        '{"type":"message_end","message":{"role":"assistant",'
+        '"content":[],"stopReason":"error",'
+        '"errorMessage":"upstream unavailable"}}'
+    )
+    monkeypatch.setattr(
+        query_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=event_stream,
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Pi CLI error: upstream unavailable"):
         query_module._run_pi_cli("claude", None, "hello")

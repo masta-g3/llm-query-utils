@@ -627,10 +627,11 @@ def _parse_pi_event_stream(event_stream: str) -> tuple[Optional[str], Optional[d
     text = None
     usage = None
     error_message = None
+    text_delta_parts = []
     saw_message_end = False
 
     def capture_message(message: dict) -> bool:
-        nonlocal text, usage
+        nonlocal text, usage, error_message
         if not isinstance(message, dict) or message.get("role") != "assistant":
             return False
         message_text = _extract_pi_text(message)
@@ -639,6 +640,11 @@ def _parse_pi_event_stream(event_stream: str) -> tuple[Optional[str], Optional[d
         message_usage = message.get("usage")
         if isinstance(message_usage, dict):
             usage = message_usage
+        message_error = message.get("errorMessage")
+        if isinstance(message_error, str) and message_error:
+            error_message = message_error
+        elif message.get("stopReason") == "error" and not error_message:
+            error_message = "Pi assistant message failed"
         return bool(message_text)
 
     for line in event_stream.splitlines():
@@ -660,6 +666,8 @@ def _parse_pi_event_stream(event_stream: str) -> tuple[Optional[str], Optional[d
         event_type = payload.get("type")
         if event_type == "message_end":
             saw_message_end = capture_message(payload.get("message") or {}) or saw_message_end
+        elif event_type == "turn_end":
+            capture_message(payload.get("message") or {})
         elif event_type == "agent_end" and not saw_message_end:
             messages = payload.get("messages") or []
             if isinstance(messages, list):
@@ -670,9 +678,21 @@ def _parse_pi_event_stream(event_stream: str) -> tuple[Optional[str], Optional[d
             error_message = payload["errorMessage"]
         elif event_type == "message_update":
             assistant_event = payload.get("assistantMessageEvent") or {}
-            if isinstance(assistant_event, dict) and assistant_event.get("type") == "error":
-                error_message = assistant_event.get("message") or error_message
+            if not isinstance(assistant_event, dict):
+                continue
+            if assistant_event.get("type") == "text_delta":
+                delta = assistant_event.get("delta")
+                if isinstance(delta, str):
+                    text_delta_parts.append(delta)
+            elif assistant_event.get("type") == "error":
+                error_message = (
+                    assistant_event.get("message")
+                    or assistant_event.get("errorMessage")
+                    or error_message
+                )
 
+    if not text and text_delta_parts:
+        text = "".join(text_delta_parts)
     return text, usage, error_message
 
 
@@ -728,7 +748,7 @@ def _run_pi_cli(
     )
     output_text, usage, error_message = _parse_pi_event_stream(event_stream)
 
-    if result.returncode != 0:
+    if result.returncode != 0 or (error_message and not output_text):
         if error_message:
             raise RuntimeError(f"Pi CLI error: {error_message}")
         details = event_stream.strip() or "unknown error"
