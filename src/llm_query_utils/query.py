@@ -37,6 +37,7 @@ PI_OPTION_KEYS = {
     "provider",
     "thinking",
     "tools",
+    "extensions",
     "timeout",
     "cwd",
     "isolate_resources",
@@ -537,6 +538,13 @@ def _validate_pi_options(pi_options: Optional[dict]) -> dict:
         if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
             raise ValueError("pi_options.tools must be a list of strings when provided")
 
+    extensions = options.get("extensions")
+    if extensions is not None:
+        if not isinstance(extensions, list) or not all(
+            isinstance(extension, str) and extension.strip() for extension in extensions
+        ):
+            raise ValueError("pi_options.extensions must be a list of non-empty strings")
+
     timeout = options.get("timeout")
     if timeout is not None and (not isinstance(timeout, int) or isinstance(timeout, bool)):
         raise ValueError("pi_options.timeout must be an integer when provided")
@@ -584,6 +592,9 @@ def _build_pi_command(
             "--no-prompt-templates",
             "--no-context-files",
         ])
+
+    for extension in options.get("extensions") or []:
+        cmd.extend(["--extension", extension])
 
     tools = options.get("tools")
     if tools:

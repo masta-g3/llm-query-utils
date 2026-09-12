@@ -116,7 +116,20 @@ Pi route auth/config is handled by the local `pi` CLI:
 - by default the Pi route is ephemeral, disables Pi tools, and disables discovered resources for deterministic query behavior
 - structured output is requested through prompt instructions and validated locally with Pydantic; use the LiteLLM/Instructor route when native tool-call schemas are required
 
-Supported `pi_options` keys: `model`, `provider`, `thinking`, `tools`, `timeout`, `cwd`, `isolate_resources`, `no_session`.
+Supported `pi_options` keys: `model`, `provider`, `thinking`, `tools`, `extensions`, `timeout`, `cwd`, `isolate_resources`, `no_session`.
+
+Load selected extensions without enabling resource discovery:
+
+```python
+pi_options={
+    "provider": "openai-codex",
+    "extensions": ["/absolute/path/to/pi-web-access/index.ts"],
+    "tools": ["web_search", "get_search_content"],
+    "timeout": 900,
+}
+```
+
+`extensions` accepts a list of non-empty Pi extension sources and adds explicit `--extension` flags. Resource isolation remains enabled by default. `tools` allowlists both built-in and extension tools; omitting it keeps all tools disabled. Extensions execute trusted local code, so load only reviewed sources.
 
 ## Modules
 

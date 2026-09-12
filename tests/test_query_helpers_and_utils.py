@@ -840,6 +840,38 @@ def test_build_pi_command_defaults_to_safe_query_mode():
     assert cwd == "/tmp"
 
 
+def test_build_pi_command_loads_explicit_extensions_with_isolation():
+    cmd, _, _ = query_module._build_pi_command(
+        llm_model="gpt-6-astra",
+        system_message="system rules",
+        user_message="hello",
+        pi_options={
+            "extensions": ["/opt/pi/web/index.ts", "/opt/pi/second.ts"],
+            "tools": ["web_search", "get_search_content"],
+        },
+    )
+
+    assert "--no-extensions" in cmd
+    assert "--no-skills" in cmd
+    assert "--no-context-files" in cmd
+    assert cmd.count("--extension") == 2
+    assert cmd[cmd.index("--extension") + 1] == "/opt/pi/web/index.ts"
+    assert "/opt/pi/second.ts" in cmd
+    assert cmd[cmd.index("--tools") + 1] == "web_search,get_search_content"
+    assert "--no-tools" not in cmd
+
+
+@pytest.mark.parametrize("extensions", ["web.ts", [None], [""], ["  "]])
+def test_pi_options_reject_invalid_extensions(extensions):
+    with pytest.raises(ValueError, match="pi_options.extensions"):
+        query_module._build_pi_command(
+            llm_model="gpt-6-astra",
+            system_message=None,
+            user_message="hello",
+            pi_options={"extensions": extensions},
+        )
+
+
 def test_pi_options_validation_rejects_bad_types():
     with pytest.raises(ValueError, match="pi_options must be a dictionary"):
         query_module._build_pi_command(
