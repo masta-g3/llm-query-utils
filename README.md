@@ -131,6 +131,48 @@ pi_options={
 
 `extensions` accepts a list of non-empty Pi extension sources and adds explicit `--extension` flags. Resource isolation remains enabled by default. `tools` allowlists both built-in and extension tools; omitting it keeps all tools disabled. Extensions execute trusted local code, so load only reviewed sources.
 
+## Logging direct Pi agents
+
+`pi-logged` starts Pi with an explicit usage-logging extension. It preserves Pi arguments, tools, model choices, terminal output, and process signals. Use it for direct Pi agents, not as a replacement for the `run_query()` transport. Existing Python usage callbacks remain unchanged.
+
+Install the optional PostgreSQL support and console commands:
+
+```bash
+uv tool install --editable '/Users/manager/Code/llm-query-utils[pi-logging]'
+```
+
+In the calling project's root, create `.pi/usage-logging.json`:
+
+```json
+{
+  "project_id": "llmpedia",
+  "env_file": "../.env",
+  "table": "papers.token_usage_logs"
+}
+```
+
+`env_file` resolves relative to this profile. Its `DB_NAME`, `DB_USER`, `DB_PASS`, `DB_HOST`, and `DB_PORT` values are authoritative for logging; stale environment values from a tmux server do not override them. Use literal credential values; the logger does not expand `${...}` references. Keep credentials out of the profile and version control. The logger targets the existing `papers.token_usage_logs` schema; it does not create tables.
+
+Run from that project root:
+
+```bash
+pi-logged --print 'Reply with OK'
+```
+
+The launcher resolves normal `pi` from PATH and explicitly loads the packaged extension, including when `--no-extensions` is present. It also points `PI_TMUX_SUBAGENTS_PI_BIN` at itself, so tmux children use the same launcher. Each child loads the project profile independently. Do not alias normal `pi` to this command or auto-load the extension globally: existing Python callbacks could otherwise log the same calls twice.
+
+Reported response and default-compaction usage is saved first in private local files under `~/.local/state/llm-query-utils/pi/<project_id>/`. Each record has a UUID reused for every upload attempt. PostgreSQL inserts use `ON CONFLICT (id) DO NOTHING`; files are removed only after commit. Destination fingerprints prevent pending records from being redirected by a changed profile.
+
+Database failures leave records pending and do not stop Pi. Startup, run completion, compaction, and shutdown make bounded upload attempts. Retry manually with:
+
+```bash
+llm-usage flush --config /absolute/project/.pi/usage-logging.json
+```
+
+Manual flush reports failure when delivery errors remain. A local write failure is different: the extension exits Pi with code 74 rather than continue without capture. The logger never stores prompts, answers, tools, or credentials.
+
+Response model labels prefer Pi's provider-reported `responseModel`; default compaction records use the active catalog model and may aggregate two summary calls. Missing usage, custom summarizers without attribution, and hard kills before capture remain coverage gaps. Costs are API-equivalent estimates, not subscription charges. Unknown costs remain unknown, not invented zeroes. Cache counts and costs stay separate from uncached input.
+
 ## Modules
 
 | Module | Purpose |
@@ -140,3 +182,5 @@ pi_options={
 | `cache.py` | Anthropic prompt caching helpers |
 | `vision.py` | Multi-modal message formatting |
 | `usage.py` | Token/cost tracking via callback; Codex costs are LiteLLM API-equivalent estimates, not subscription spend |
+| `pi_logging.py` | Opt-in `pi-logged` launcher and duplicate-safe PostgreSQL upload |
+| `pi_usage_extension.ts` | Packaged Pi event capture with durable local pending records |

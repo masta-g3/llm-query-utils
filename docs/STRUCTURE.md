@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Reusable LLM query layer extracted from [llmpedia-workflows](https://github.com/manolorueda/llmpedia-workflows). Provides a single `run_query()` function that transparently routes queries to the appropriate backend based on the model requested.
+Shared LLM query and usage-logging tools extracted from [llmpedia-workflows](https://github.com/manolorueda/llmpedia-workflows). `run_query()` routes Python queries to the requested backend. The separate opt-in `pi-logged` command records direct Pi agent usage without changing query routing.
 
 **Target users:** Internal projects that need LLM calls with structured output, retries, caching, and usage tracking without duplicating plumbing.
 
@@ -73,6 +73,8 @@ llm-query-utils/
     ├── query.py             # run_query() + _pi_sdk_query() + _codex_sdk_query() + _agent_sdk_query()
     ├── cache.py             # add_cache_control() for Anthropic prompt caching
     ├── vision.py            # format_vision_messages() for multi-modal
+    ├── pi_logging.py        # Opt-in Pi launcher and PostgreSQL uploader
+    ├── pi_usage_extension.ts # Packaged response/compaction capture
     └── usage.py             # UsageData dataclass + callback mechanism
 ```
 
@@ -97,6 +99,25 @@ Usage emission notes:
 - Agent SDK path emits one usage event when a terminal `ResultMessage` is received.
 - If Agent SDK omits usage payload fields, Agent usage falls back to zeros instead of skipping the callback event.
 
+### Direct Pi usage logging
+
+`pi_logging.py` owns the `pi-logged` launcher, profile parsing, and `llm-usage flush` command. `pi_usage_extension.ts` ships inside the Python package and subscribes to Pi response and default-compaction events. The launcher explicitly injects this extension and sets the tmux child executable to itself; it does not modify global Pi settings.
+
+```text
+pi-logged -> normal Pi + packaged extension
+                         -> private pending JSON files
+                         -> bounded Python uploader
+                         -> papers.token_usage_logs
+```
+
+The optional `pi-logging` extra adds the existing PostgreSQL driver and dotenv configuration pattern. Each project opts in through `<cwd>/.pi/usage-logging.json`; its explicit credential file is authoritative even in tmux children. Existing `run_query()` callbacks and consumer-owned writers are unchanged.
+
+Capture is local-first, one immutable UUID per usage event. Upload removes files only after a successful commit; the table's primary key makes retries duplicate-safe. Database failures retain files, while local capture failure terminates Pi. See the README for installation, retry commands, and coverage limits.
+
+Keep one timeout owner per upload. The Pi extension runs the worker directly under `pi.exec`; manual and startup uploads use Python supervision. Nesting these deadlines can kill the supervisor and leave its database worker running. Check Pi's `killed` flag as well as the exit code, because a terminated command can report code zero.
+
+Send each bounded batch in one parameterized INSERT. Per-record round trips can exceed the upload deadline and repeatedly roll back the same backlog even when the database is healthy.
+
 ### `cache.py` — Prompt caching
 
 `add_cache_control()` injects `cache_control: {type: ephemeral}` into a message at a given index, enabling Anthropic's prompt caching. No-ops for non-Claude models.
@@ -107,8 +128,8 @@ Usage emission notes:
 
 ## Design Patterns
 
-- **No global state** beyond the optional usage callback.
-- **No env loading** — consumers handle their own `.env`.
+- **Query routing state** is limited to the optional usage callback.
+- **No env loading in query routing** — consumers handle their own `.env`. The opt-in logging CLI reads only the credential file named in its project profile.
 - **Pydantic for structured output** across backends (Instructor for LiteLLM, `output_format` schema for Agent SDK, native Codex schema, prompt-instructed Pi JSON validation).
 - **Errors surface naturally** — no blanket try/except. Retries only on transient API failures.
 

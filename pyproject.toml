@@ -14,6 +14,16 @@ dependencies = [
     "pydantic>=2.0",
 ]
 
+[project.optional-dependencies]
+pi-logging = [
+    "psycopg2-binary>=2.9",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+pi-logged = "llm_query_utils.pi_logging:main"
+llm-usage = "llm_query_utils.pi_logging:usage_main"
+
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]
 build-backend = "uv_build"
