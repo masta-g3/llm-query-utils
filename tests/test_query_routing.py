@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import llm_query_utils.query as query_module
 
 
@@ -108,6 +110,32 @@ def test_routes_to_pi_when_enabled(monkeypatch):
     )
 
     assert result == "pi-path"
+
+
+def test_pi_return_usage_is_opt_in_and_typed(monkeypatch):
+    usage = query_module.UsageData("model", "process", 1, 2, 0.1, 0.2, total_cost=0.3)
+
+    async def fake_pi(*args, **kwargs):
+        assert kwargs["return_usage"] is True
+        return query_module.QueryRun("pi-path", usage)
+
+    monkeypatch.setattr(query_module, "_pi_sdk_query", fake_pi)
+    result = query_module.run_query(
+        user_message="hello", llm_model="model", use_pi_sdk=True, return_usage=True,
+    )
+    assert result == query_module.QueryRun("pi-path", usage)
+
+
+def test_return_usage_rejected_before_unsupported_transport(monkeypatch):
+    called = []
+    monkeypatch.setattr(query_module, "completion", lambda *a, **kw: called.append(1))
+
+    with pytest.raises(ValueError, match="return_usage.*Pi"):
+        query_module.run_query(
+            user_message="hello", llm_model="gpt-4o", use_agent_sdk=False,
+            return_usage=True,
+        )
+    assert called == []
 
 
 def test_pi_route_wins_over_claude_agent_when_enabled(monkeypatch):

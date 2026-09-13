@@ -46,7 +46,8 @@ def make_record(profile, **updates):
             "output": 7,
             "cacheRead": 5,
             "cacheWrite": 3,
-            "cost": {"input": 0, "output": 0.2, "cacheRead": 0.01},
+            "reasoning": 2,
+            "cost": {"input": 0, "output": 0.2, "cacheRead": 0.01, "total": 0.25},
         },
         "event_kind": "response",
         "attribution": "response_model",
@@ -133,12 +134,12 @@ def test_record_values_map_cache_and_nullable_costs(profile):
     loaded = pi_logging.load_profile(profile)
     record = make_record(loaded)
 
-    values = pi_logging.record_values(record, loaded.destination)
+    values = pi_logging.record_values(record, loaded.destination, loaded.project_id)
 
     assert values[0] == record["id"]
     assert isinstance(values[0], str)
     assert values[1] == datetime(2026, 9, 12, 15, 4, 5, 123000)
-    assert values[5:] == (11, 7, 0, 0.2, 3, 5, None, 0.01)
+    assert values[5:] == (11, 7, 0, 0.2, 3, 5, None, 0.01, "example-project", 2, 0.25)
 
 
 @pytest.mark.parametrize("value", [-1, float("inf"), float("nan")])
@@ -166,6 +167,18 @@ def test_record_rejects_database_column_overflow(profile):
 
     with pytest.raises(pi_logging.RecordError, match="process_id.*255"):
         pi_logging.record_values(record, loaded.destination)
+
+
+def test_record_derives_total_only_when_all_component_costs_are_complete(profile):
+    loaded = pi_logging.load_profile(profile)
+    complete = make_record(loaded)
+    complete["usage"]["cost"].pop("total")
+    complete["usage"]["cost"]["cacheWrite"] = 0.02
+    incomplete = make_record(loaded)
+    incomplete["usage"]["cost"].pop("total")
+
+    assert pi_logging.record_values(complete, loaded.destination, loaded.project_id)[-1] == pytest.approx(0.23)
+    assert pi_logging.record_values(incomplete, loaded.destination, loaded.project_id)[-1] is None
 
 
 def test_record_rejects_filename_or_destination_mismatch(profile):
@@ -202,10 +215,10 @@ def test_flush_commits_one_batch_then_deletes(profile):
     assert len(inserts) == 1
     sql, params = inserts[0]
     assert "ON CONFLICT (id) DO NOTHING" in sql
-    assert sql.count("%s") == len(params) == 26
-    actual_rows = {params[i]: params[i:i + 13] for i in range(0, len(params), 13)}
+    assert sql.count("%s") == len(params) == 32
+    actual_rows = {params[i]: params[i:i + 16] for i in range(0, len(params), 16)}
     assert actual_rows == {
-        record['id']: pi_logging.record_values(record, loaded.destination)
+        record['id']: pi_logging.record_values(record, loaded.destination, loaded.project_id)
         for record in (first, second)
     }
 
