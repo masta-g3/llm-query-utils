@@ -131,6 +131,35 @@ pi_options={
 
 `extensions` accepts a list of non-empty Pi extension sources and adds explicit `--extension` flags. Resource isolation remains enabled by default. `tools` allowlists both built-in and extension tools; omitting it keeps all tools disabled. Extensions execute trusted local code, so load only reviewed sources.
 
+Pi callers can opt in to the typed result and usage pair with `return_usage=True`:
+
+```python
+from llm_query_utils import QueryRun
+
+run = run_query(..., use_pi_sdk=True, return_usage=True)
+assert isinstance(run, QueryRun)
+print(run.result, run.usage.total_cost if run.usage else None)
+```
+
+Other routes reject `return_usage=True`. Default return values do not change. `UsageData.total_cost` is nullable. It is the provider whole-call estimate when known and includes cache cost once.
+
+## PostgreSQL usage callback
+
+Apply `migrations/001_central_usage.sql` before releasing these writers. See [central usage logging](docs/USAGE_LOGGING.md) for the table contract, verified totals, historical migration, and guarded rollout. No query or uploader changes the schema automatically.
+
+Install the `pi-logging` extra for PostgreSQL support. Register one callback with an explicit project and a fresh DBAPI connection factory:
+
+```python
+from llm_query_utils import postgres_usage_callback, set_usage_callback
+
+set_usage_callback(postgres_usage_callback(
+    project_id="sentiment",
+    connect=get_connection,
+))
+```
+
+The callback skips events without `process_id`. For other events, it opens one connection, inserts into `papers.token_usage_logs`, commits once, and closes the connection. Database errors surface. `insert_usage_rows(connection, rows)` is also available from `llm_query_utils.usage_db` for caller-owned batches; each tuple must follow `USAGE_COLUMNS`, and the function does not commit or close the connection.
+
 ## Logging direct Pi agents
 
 `pi-logged` starts Pi with an explicit usage-logging extension. It preserves Pi arguments, tools, model choices, terminal output, and process signals. Use it for direct Pi agents, not as a replacement for the `run_query()` transport. Existing Python usage callbacks remain unchanged.
@@ -181,6 +210,7 @@ Response model labels prefer Pi's provider-reported `responseModel`; default com
 | `config.py` | Default model constants |
 | `cache.py` | Anthropic prompt caching helpers |
 | `vision.py` | Multi-modal message formatting |
-| `usage.py` | Token/cost tracking via callback; Codex costs are LiteLLM API-equivalent estimates, not subscription spend |
+| `usage.py` | Shared usage metadata, complete Pi totals, and callback dispatch |
+| `usage_db.py` | Project-attributed PostgreSQL callback and shared batch INSERT |
 | `pi_logging.py` | Opt-in `pi-logged` launcher and duplicate-safe PostgreSQL upload |
 | `pi_usage_extension.ts` | Packaged Pi event capture with durable local pending records |

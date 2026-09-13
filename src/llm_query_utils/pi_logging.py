@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .usage import pi_total_cost
+from .usage_db import insert_usage_rows
+
 PROFILE_NAME = Path(".pi/usage-logging.json")
 ALLOWED_TABLE = "papers.token_usage_logs"
 BATCH_SIZE = 100
@@ -148,7 +151,9 @@ def _number(mapping: dict[str, Any], key: str, *, integer: bool = False) -> int 
     return value
 
 
-def record_values(record: dict[str, Any], destination: str) -> tuple[Any, ...]:
+def record_values(
+    record: dict[str, Any], destination: str, project_id: str | None = None
+) -> tuple[Any, ...]:
     if not isinstance(record, dict):
         raise RecordError("record must be a JSON object")
     if record.get("destination") != destination:
@@ -187,6 +192,9 @@ def record_values(record: dict[str, Any], destination: str) -> tuple[Any, ...]:
     if not isinstance(cost, dict):
         raise RecordError("usage.cost must be an object")
 
+    _number(cost, "total")  # Reject corrupt pending data before deriving a total.
+    total_cost = pi_total_cost(usage)
+
     return (
         record_id_text,
         _utc_timestamp(record.get("tstp")),
@@ -201,10 +209,19 @@ def record_values(record: dict[str, Any], destination: str) -> tuple[Any, ...]:
         _number(usage, "cacheRead", integer=True),
         _number(cost, "cacheWrite"),
         _number(cost, "cacheRead"),
+        project_id,
+        _number(usage, "reasoning", integer=True),
+        total_cost,
     )
 
 
-def read_record(path: Path, destination: str, *, raw: Any = None) -> tuple[Any, ...]:
+def read_record(
+    path: Path,
+    destination: str,
+    project_id: str | None = None,
+    *,
+    raw: Any = None,
+) -> tuple[Any, ...]:
     try:
         filename_id = uuid.UUID(path.stem)
     except ValueError as exc:
@@ -218,21 +235,10 @@ def read_record(path: Path, destination: str, *, raw: Any = None) -> tuple[Any, 
             raise
         except (OSError, json.JSONDecodeError) as exc:
             raise RecordError("pending record is not valid JSON") from exc
-    values = record_values(raw, destination)
+    values = record_values(raw, destination, project_id)
     if values[0] != str(filename_id):
         raise RecordError("pending record filename does not match record id")
     return values
-
-
-_INSERT_SQL = f"""
-INSERT INTO {ALLOWED_TABLE}
-  (id, tstp, model_name, process_id, session_id,
-   prompt_tokens, completion_tokens, prompt_cost, completion_cost,
-   cache_creation_input_tokens, cache_read_input_tokens,
-   cache_creation_cost, cache_read_cost)
-VALUES {{rows}}
-ON CONFLICT (id) DO NOTHING
-"""
 
 
 def _default_connect(**kwargs: Any) -> Any:
@@ -258,7 +264,7 @@ def flush_pending(
     invalid = 0
     for path in profile.spool_dir.glob("*.json"):
         try:
-            values = read_record(path, profile.destination)
+            values = read_record(path, profile.destination, profile.project_id)
         except FileNotFoundError:
             # Another uploader committed and removed the immutable record.
             continue
@@ -280,11 +286,7 @@ def flush_pending(
             connect_timeout=CONNECT_TIMEOUT,
             options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
         )
-        row_placeholders = "(" + ", ".join(["%s"] * len(pending[0][1])) + ")"
-        sql = _INSERT_SQL.format(rows=", ".join([row_placeholders] * len(pending)))
-        values = tuple(value for _, row in pending for value in row)
-        with connection.cursor() as cursor:
-            cursor.execute(sql, values)
+        insert_usage_rows(connection, (row for _, row in pending))
         connection.commit()
     except (psycopg2.Error, OSError):
         if connection is not None:

@@ -3,13 +3,14 @@ import os
 import asyncio
 import json
 from copy import deepcopy
+from dataclasses import dataclass
 import subprocess
 import tempfile
 import time
 import traceback
 import warnings
 from types import SimpleNamespace
-from typing import Type, Optional, Union
+from typing import Generic, Type, Optional, TypeVar, Union
 
 from pydantic import BaseModel
 from litellm import completion, cost_per_token, get_model_info
@@ -25,13 +26,22 @@ from claude_agent_sdk import (
 )
 
 from .config import DEFAULT_MODEL
-from .usage import UsageData, fire_usage_callback
+from .usage import UsageData, fire_usage_callback, pi_total_cost, valid_cost
 
 warnings.filterwarnings("ignore", message="Valid config keys have changed in V2:*")
 
 logger = logging.getLogger(__name__)
 
 CODEX_MODEL_PREFIXES = ("gpt-5",)
+ResultT = TypeVar("ResultT")
+
+
+@dataclass(frozen=True)
+class QueryRun(Generic[ResultT]):
+    result: ResultT
+    usage: Optional[UsageData]
+
+
 PI_OPTION_KEYS = {
     "model",
     "provider",
@@ -111,6 +121,11 @@ def _log_usage(
     cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
     cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
 
+    reasoning_tokens = getattr(usage, "reasoning_output_tokens", None)
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    if reasoning_tokens is None and completion_details is not None:
+        reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
+
     fire_usage_callback(UsageData(
         model=llm_model,
         process_id=process_id,
@@ -122,6 +137,8 @@ def _log_usage(
         cache_read_input_tokens=cache_read_tokens,
         cache_creation_cost=cache_creation_cost,
         cache_read_cost=cache_read_cost,
+        reasoning_output_tokens=reasoning_tokens,
+        total_cost=prompt_cost + completion_cost,
     ))
 
 
@@ -144,6 +161,8 @@ def _fire_agent_usage(
         completion_cost=0,
         cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
         cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
+        reasoning_output_tokens=usage.get("reasoning_output_tokens"),
+        total_cost=float(total_cost_usd) if total_cost_usd is not None else None,
     ))
 
 
@@ -329,9 +348,10 @@ def _is_pricing_lookup_error(exc: Exception) -> bool:
 def _calculate_codex_usage_costs(
     usage: SimpleNamespace,
     llm_model: str,
-) -> tuple[float, float, Optional[float], Optional[float]]:
+) -> tuple[float, float, Optional[float], Optional[float], Optional[float]]:
     try:
-        return _calculate_usage_costs(usage, _codex_pricing_model(llm_model))
+        costs = _calculate_usage_costs(usage, _codex_pricing_model(llm_model))
+        return (*costs, costs[0] + costs[1])
     except Exception as exc:
         if not _is_pricing_lookup_error(exc):
             raise
@@ -339,7 +359,7 @@ def _calculate_codex_usage_costs(
             "Codex API-equivalent pricing unavailable for model=%s; logging zero cost",
             llm_model,
         )
-        return 0, 0, None, None
+        return 0, 0, None, None, None
 
 
 def _fire_codex_usage(
@@ -353,7 +373,7 @@ def _fire_codex_usage(
         return
 
     codex_usage = _codex_usage_to_namespace(usage)
-    prompt_cost, completion_cost, cache_creation_cost, cache_read_cost = (
+    prompt_cost, completion_cost, cache_creation_cost, cache_read_cost, total_cost = (
         _calculate_codex_usage_costs(codex_usage, pricing_model or llm_model)
     )
 
@@ -368,6 +388,8 @@ def _fire_codex_usage(
         cache_read_input_tokens=codex_usage.cache_read_input_tokens,
         cache_creation_cost=cache_creation_cost,
         cache_read_cost=cache_read_cost,
+        reasoning_output_tokens=usage.get("reasoning_output_tokens"),
+        total_cost=total_cost,
     ))
 
 
@@ -711,23 +733,27 @@ def _fire_pi_usage(
     usage: Optional[dict],
     llm_model: str,
     process_id: Optional[str],
-) -> None:
+) -> Optional[UsageData]:
     if not usage:
-        return
+        return None
 
     cost = usage.get("cost") or {}
-    fire_usage_callback(UsageData(
+    event = UsageData(
         model=llm_model,
         process_id=process_id,
-        prompt_tokens=usage.get("input", 0),
-        completion_tokens=usage.get("output", 0),
-        prompt_cost=cost.get("input", 0),
-        completion_cost=cost.get("output", 0),
-        cache_creation_input_tokens=usage.get("cacheWrite", 0),
-        cache_read_input_tokens=usage.get("cacheRead", 0),
-        cache_creation_cost=cost.get("cacheWrite"),
-        cache_read_cost=cost.get("cacheRead"),
-    ))
+        prompt_tokens=usage.get("input"),
+        completion_tokens=usage.get("output"),
+        prompt_cost=valid_cost(cost.get("input")),
+        completion_cost=valid_cost(cost.get("output")),
+        cache_creation_input_tokens=usage.get("cacheWrite"),
+        cache_read_input_tokens=usage.get("cacheRead"),
+        cache_creation_cost=valid_cost(cost.get("cacheWrite")),
+        cache_read_cost=valid_cost(cost.get("cacheRead")),
+        reasoning_output_tokens=usage.get("reasoning"),
+        total_cost=pi_total_cost(usage),
+    )
+    fire_usage_callback(event)
+    return event
 
 
 def _run_pi_cli(
@@ -780,7 +806,8 @@ async def _pi_sdk_query(
     output_schema: Optional[Type[BaseModel]] = None,
     process_id: str = None,
     pi_options: Optional[dict] = None,
-) -> Union[str, BaseModel]:
+    return_usage: bool = False,
+) -> Union[str, BaseModel, QueryRun]:
     if user_message is None:
         raise ValueError("user_message is required when use_pi_sdk=True")
 
@@ -793,12 +820,17 @@ async def _pi_sdk_query(
         pi_options,
     )
 
-    _fire_pi_usage(usage, llm_model, process_id)
+    usage_event = _fire_pi_usage(usage, llm_model, process_id)
     logger.info(f"Pi query complete: {len(output_text)} chars")
 
-    if output_schema is not None:
-        return output_schema.model_validate_json(output_text)
-    return output_text
+    result = (
+        output_schema.model_validate_json(output_text)
+        if output_schema is not None
+        else output_text
+    )
+    if return_usage:
+        return QueryRun(result=result, usage=usage_event)
+    return result
 
 
 def run_query(
@@ -820,8 +852,9 @@ def run_query(
     sdk_allowed_tools: Optional[list[str]] = None,
     codex_options: Optional[dict] = None,
     pi_options: Optional[dict] = None,
+    return_usage: bool = False,
     **kwargs,
-) -> Union[BaseModel, str]:
+) -> Union[BaseModel, str, QueryRun]:
     """Run an LLM query, routing through Agent SDK (Claude) or LiteLLM/Instructor (others).
 
     Args:
@@ -832,6 +865,9 @@ def run_query(
         use_pi_sdk: Route query through Pi CLI JSON mode (default: False).
         sdk_allowed_tools: Tools the agent can use (e.g., ["Read"] for image analysis).
     """
+    if return_usage and not use_pi_sdk:
+        raise ValueError("return_usage is supported only for the Pi route (use_pi_sdk=True)")
+
     thinking_requested = (
         enable_extended_thinking
         or thinking_options is not None
@@ -873,13 +909,18 @@ def run_query(
         )
 
     if use_pi_sdk:
+        pi_kwargs = {
+            "output_schema": model,
+            "process_id": process_id,
+            "pi_options": pi_options,
+        }
+        if return_usage:
+            pi_kwargs["return_usage"] = True
         return asyncio.run(_pi_sdk_query(
             system_message,
             user_message,
             llm_model,
-            output_schema=model,
-            process_id=process_id,
-            pi_options=pi_options,
+            **pi_kwargs,
         ))
 
     if use_codex_route:

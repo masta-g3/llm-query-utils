@@ -150,6 +150,7 @@ def test_agent_sdk_query_emits_zero_usage_on_terminal_success_without_usage(monk
     assert usage_events[0].completion_tokens == 0
     assert usage_events[0].prompt_cost == 0.42
     assert usage_events[0].completion_cost == 0
+    assert usage_events[0].total_cost == 0.42
 
 
 def test_agent_sdk_query_emits_usage_with_present_payload(monkeypatch):
@@ -376,7 +377,7 @@ def test_fire_codex_usage_accepts_both_cache_read_token_keys(monkeypatch):
     monkeypatch.setattr(
         query_module,
         "_calculate_codex_usage_costs",
-        lambda usage, llm_model: (0.1, 0.2, None, 0.3),
+        lambda usage, llm_model: (0.1, 0.2, None, 0.3, 0.3),
     )
 
     query_module._fire_codex_usage(
@@ -419,6 +420,7 @@ def test_fire_codex_usage_emits_api_equivalent_costs(monkeypatch):
     assert usage_events[0].prompt_cost == 1.25
     assert usage_events[0].completion_cost == 2.5
     assert usage_events[0].cache_read_cost == 0.75
+    assert usage_events[0].total_cost == 3.75
 
 
 def test_fire_codex_usage_uses_model_basename_for_pricing(monkeypatch):
@@ -464,6 +466,7 @@ def test_fire_codex_usage_keeps_tokens_when_pricing_missing(monkeypatch, caplog)
     assert usage_events[0].cache_read_input_tokens == 3
     assert usage_events[0].prompt_cost == 0
     assert usage_events[0].completion_cost == 0
+    assert usage_events[0].total_cost is None
     assert "pricing unavailable" in caplog.text
 
 
@@ -778,6 +781,50 @@ def test_parse_pi_event_stream_falls_back_to_text_deltas():
     assert error is None
 
 
+def test_pi_usage_preserves_nullable_values_reasoning_and_authoritative_total():
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    event = query_module._fire_pi_usage(
+        {
+            "input": 10,
+            "output": 3,
+            "reasoning": 2,
+            "cost": {"total": 0.0},
+        },
+        llm_model="openai-codex/gpt-5.5",
+        process_id="p-pi",
+    )
+
+    assert event is usage_events[0]
+    assert event.prompt_cost is None
+    assert event.completion_cost is None
+    assert event.cache_creation_input_tokens is None
+    assert event.cache_read_input_tokens is None
+    assert event.reasoning_output_tokens == 2
+    assert event.total_cost == 0.0
+
+
+def test_pi_usage_derives_total_only_from_complete_components():
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+
+    complete = query_module._fire_pi_usage(
+        {
+            "input": 10, "output": 3, "cacheRead": 0, "cacheWrite": 0,
+            "cost": {"input": 0.1, "output": 0.2},
+        },
+        "model", "process",
+    )
+    incomplete = query_module._fire_pi_usage(
+        {"input": 10, "output": 3, "cost": {"input": 0.1}},
+        "model", "process",
+    )
+
+    assert complete.total_cost == pytest.approx(0.3)
+    assert incomplete.total_cost is None
+
+
 def test_fire_pi_usage_maps_tokens_costs_and_cache():
     usage_events = []
     set_usage_callback(lambda data: usage_events.append(data))
@@ -810,6 +857,46 @@ def test_fire_pi_usage_maps_tokens_costs_and_cache():
     assert usage_events[0].completion_cost == 0.02
     assert usage_events[0].cache_read_cost == 0.001
     assert usage_events[0].cache_creation_cost == 0.002
+    assert usage_events[0].total_cost == pytest.approx(0.033)
+
+
+def test_pi_structured_usage_fires_once_before_validation_and_can_be_returned(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+    monkeypatch.setattr(
+        query_module,
+        "_run_pi_cli",
+        lambda *args: (
+            '{"status":"ok","count":7}',
+            {"input": 2, "output": 1, "reasoning": 1, "cost": {"total": 0.25}},
+            "",
+        ),
+    )
+
+    run = asyncio.run(query_module._pi_sdk_query(
+        None, "hello", "model", OutputSchema, "process", return_usage=True,
+    ))
+
+    assert isinstance(run, query_module.QueryRun)
+    assert run.result == OutputSchema(status="ok", count=7)
+    assert run.usage is usage_events[0]
+    assert len(usage_events) == 1
+
+
+def test_pi_usage_is_emitted_before_structured_validation_error(monkeypatch):
+    usage_events = []
+    set_usage_callback(lambda data: usage_events.append(data))
+    monkeypatch.setattr(
+        query_module,
+        "_run_pi_cli",
+        lambda *args: ("not-json", {"input": 1, "output": 1, "cost": {"total": 0.1}}, ""),
+    )
+
+    with pytest.raises(Exception):
+        asyncio.run(query_module._pi_sdk_query(
+            None, "hello", "model", OutputSchema, "process", return_usage=True,
+        ))
+    assert len(usage_events) == 1
 
 
 def test_build_pi_command_defaults_to_safe_query_mode():

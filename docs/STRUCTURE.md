@@ -74,6 +74,7 @@ llm-query-utils/
     ├── cache.py             # add_cache_control() for Anthropic prompt caching
     ├── vision.py            # format_vision_messages() for multi-modal
     ├── pi_logging.py        # Opt-in Pi launcher and PostgreSQL uploader
+    ├── usage_db.py          # Shared PostgreSQL insert and callback factory
     ├── pi_usage_extension.ts # Packaged response/compaction capture
     └── usage.py             # UsageData dataclass + callback mechanism
 ```
@@ -83,19 +84,19 @@ llm-query-utils/
 ### `query.py` — Core routing
 
 - **`run_query()`**: Synchronous entrypoint. Routes to Pi CLI when `use_pi_sdk=True`, Codex CLI for `gpt-5*` models when `use_codex_sdk=True`, Agent SDK for Claude, or LiteLLM otherwise. Handles retries (0s, 30s, 60s, 120s), extended thinking setup, and temperature disabling for reasoning models (o1/o3/gpt-5).
-- **`_pi_sdk_query()`**: Async Pi CLI transport wrapper using `pi --mode json`. Defaults to `--no-session`, `--no-tools`, and isolated resources. Supports plain output and prompt-instructed structured output validated by Pydantic, and maps Pi message usage into the usage callback. Use `pi_options.provider`, `pi_options.thinking`, and `pi_options.timeout` for provider choice, thinking level, and process bounds. `pi_options.extensions` loads explicit extension sources while keeping discovery disabled; `pi_options.tools` allowlists the tools exposed to the model.
+- **`_pi_sdk_query()`**: Async Pi CLI transport wrapper using `pi --mode json`. Defaults to `--no-session`, `--no-tools`, and isolated resources. Supports plain output and prompt-instructed structured output validated by Pydantic, and maps Pi message usage into the usage callback. `run_query(..., return_usage=True)` returns `QueryRun(result, usage)` on this route only. Use `pi_options.provider`, `pi_options.thinking`, and `pi_options.timeout` for provider choice, thinking level, and process bounds. `pi_options.extensions` loads explicit extension sources while keeping discovery disabled; `pi_options.tools` allowlists the tools exposed to the model.
 - **`_codex_sdk_query()`**: Async Codex transport wrapper using `codex exec` + ChatGPT-auth preflight (`codex login status`). Supports plain and structured output (`--output-schema`), maps token usage from JSON events, and prices usage with LiteLLM API-equivalent estimates using the actual executed GPT-5 model. Supports `codex_options.timeout` for hard process timeouts.
 - **`_agent_sdk_query()`**: Async Agent SDK handler. Streams messages, counts tool calls, extracts structured output via `output_format`.
 
 ### `usage.py` — Usage tracking
 
-Consumer registers a callback via `set_usage_callback(fn)`. Query backends emit `UsageData` (tokens, costs, cache stats) through this callback, decoupling this package from any specific logging/DB implementation.
+Consumer registers a callback via `set_usage_callback(fn)`. Query backends emit `UsageData` (tokens, costs, cache stats, reasoning tokens, and nullable authoritative `total_cost`) through this callback. `postgres_usage_callback(project_id, connect)` provides the shared canonical database destination while keeping connection configuration in the consumer.
 
 Usage emission notes:
 - LiteLLM path emits usage from provider-reported token usage and LiteLLM pricing.
 - Pi path emits usage from Pi assistant message usage payloads.
 - Codex path emits exact token usage from Codex event stream payloads and fills cost fields with LiteLLM API-equivalent estimates. Those costs are reporting proxies for subscription-backed Codex calls, not actual ChatGPT subscription spend.
-- If LiteLLM does not know a Codex model's pricing yet, Codex usage still emits token counts with zero costs and logs a warning.
+- If LiteLLM does not know a Codex model's pricing yet, Codex usage still emits token counts with zero component placeholders, a NULL `total_cost`, and a warning.
 - Agent SDK path emits one usage event when a terminal `ResultMessage` is received.
 - If Agent SDK omits usage payload fields, Agent usage falls back to zeros instead of skipping the callback event.
 
@@ -110,7 +111,7 @@ pi-logged -> normal Pi + packaged extension
                          -> papers.token_usage_logs
 ```
 
-The optional `pi-logging` extra adds the existing PostgreSQL driver and dotenv configuration pattern. Each project opts in through `<cwd>/.pi/usage-logging.json`; its explicit credential file is authoritative even in tmux children. Existing `run_query()` callbacks and consumer-owned writers are unchanged.
+The optional `pi-logging` extra adds the existing PostgreSQL driver and dotenv configuration pattern. Each project opts in through `<cwd>/.pi/usage-logging.json`; its explicit credential file is authoritative even in tmux children. Python query callbacks remain separate from direct-Pi capture. Migrated consumers and this uploader share `usage_db.py`; they must not capture the same call through both paths. Apply the additive schema before releasing the writers. See [USAGE_LOGGING.md](USAGE_LOGGING.md) for the table and rollout contract.
 
 Capture is local-first, one immutable UUID per usage event. Upload removes files only after a successful commit; the table's primary key makes retries duplicate-safe. Database failures retain files, while local capture failure terminates Pi. See the README for installation, retry commands, and coverage limits.
 
