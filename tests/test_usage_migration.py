@@ -139,6 +139,68 @@ def test_empty_late_delta_and_null_parity(conn):
         assert cur.fetchone() == (None, None, None)
 
 
+def test_zero_cache_backfill_accepts_only_complete_historical_estimates(conn):
+    migration.apply_schema(conn)
+    rows = [
+        # label, prompt tokens/cost, completion tokens/cost, creation tokens/cost,
+        # read tokens/cost, existing total
+        ("valid", 100, "0.25", 20, "0.50", 0, None, 0, "0", None),
+        ("valid-zero-component", 0, "0", 20, "0.50", 0, "0", 0, None, None),
+        ("partial-price", 100, None, 20, "0.50", 0, None, 0, None, None),
+        ("nullable-token-count", None, "0.25", 20, "0.50", 0, None, 0, None, None),
+        ("negative-token-count", -1, "0.25", 20, "0.50", 0, None, 0, None, None),
+        ("nullable-cache-count", 100, "0.25", 20, "0.50", None, None, 0, None, None),
+        ("positive-cache-tokens", 100, "0.25", 20, "0.50", 1, None, 0, None, None),
+        ("nonzero-cache-cost", 100, "0.25", 20, "0.50", 0, "0.01", 0, None, None),
+        ("zero-price-positive-usage", 100, "0", 20, "0.50", 0, None, 0, None, None),
+        ("zero-token-positive-cost", 0, "0.25", 20, "0.50", 0, None, 0, None, None),
+        ("all-zero", 0, "0", 0, "0", 0, None, 0, None, None),
+        ("nan", 100, "NaN", 20, "0.50", 0, None, 0, None, None),
+        ("infinity", 100, "Infinity", 20, "0.50", 0, None, 0, None, None),
+        ("negative", 100, "-0.25", 20, "0.50", 0, None, 0, None, None),
+        ("known-total", 100, "0.25", 20, "0.50", 0, None, 0, None, "9.99"),
+        ("assigned-unknown", 100, "0.25", 20, "0.50", 0, None, 0, None, None),
+    ]
+    with conn.cursor() as cur:
+        for row in rows:
+            label, *values = row
+            cur.execute("""INSERT INTO papers.token_usage_logs
+                (id,tstp,model_name,process_id,project_id,prompt_tokens,prompt_cost,
+                 completion_tokens,completion_cost,cache_creation_input_tokens,
+                 cache_creation_cost,cache_read_input_tokens,cache_read_cost,total_cost)
+                VALUES (%s,now(),%s,'legacy',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (str(uuid4()), label, "keep-me" if label in {"known-total", "assigned-unknown"} else None, *values))
+
+    with conn.cursor() as cur:
+        cur.execute("""SELECT model_name,project_id,prompt_tokens,prompt_cost::text,completion_tokens,
+            completion_cost::text,cache_creation_input_tokens,cache_creation_cost::text,
+            cache_read_input_tokens,cache_read_cost::text FROM papers.token_usage_logs ORDER BY model_name""")
+        raw_before = cur.fetchall()
+    before = migration.backfill_zero_cache(conn, apply=False)
+    assert before == {"matched": 2, "total_cost_sum": Decimal("1.25"), "updated": 0, "dry_run": True}
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM papers.token_usage_logs WHERE total_cost IS NOT NULL")
+        assert cur.fetchone()[0] == 1
+
+    applied = migration.backfill_zero_cache(conn, apply=True)
+    assert applied == {"matched": 2, "total_cost_sum": Decimal("1.25"), "updated": 2, "dry_run": False}
+    with conn.cursor() as cur:
+        cur.execute("SELECT model_name,project_id,total_cost,prompt_tokens,prompt_cost FROM papers.token_usage_logs ORDER BY model_name")
+        stored = {row[0]: row[1:] for row in cur.fetchall()}
+        cur.execute("""SELECT model_name,project_id,prompt_tokens,prompt_cost::text,completion_tokens,
+            completion_cost::text,cache_creation_input_tokens,cache_creation_cost::text,
+            cache_read_input_tokens,cache_read_cost::text FROM papers.token_usage_logs ORDER BY model_name""")
+        assert cur.fetchall() == raw_before
+    assert stored["valid"] == (None, Decimal("0.75"), 100, Decimal("0.25"))
+    assert stored["valid-zero-component"] == (None, Decimal("0.50"), 0, Decimal("0"))
+    assert stored["assigned-unknown"][0:2] == ("keep-me", None)
+    assert stored["known-total"][1] == Decimal("9.99")
+    assert all(stored[label][1] is None for label, *_ in rows if label not in {"valid", "valid-zero-component", "known-total"})
+    assert migration.backfill_zero_cache(conn, apply=True) == {
+        "matched": 0, "total_cost_sum": Decimal(0), "updated": 0, "dry_run": False,
+    }
+
+
 def test_profile_attribution_requires_session_and_preserves_other_projects(conn, tmp_path):
     migration.apply_schema(conn)
     profile = tmp_path / "profile.json"
