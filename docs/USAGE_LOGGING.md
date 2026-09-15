@@ -51,6 +51,8 @@ The raw component columns remain for compatibility and investigation. They do no
 
 Only proven history receives totals. The sentiment migration distinguishes positive GPT-5.5 Pi component prices from the old local GPT-5 placeholder-zero path. Records that cannot establish a complete total remain NULL. Historical direct-Pi attribution requires an explicit profile, matching process prefix, nonempty session ID, and provider-qualified model. Ambiguous generic process names stay unassigned. No operation prices old tokens using today's price catalog.
 
+The zero-cache historical backfill verifies API-equivalent estimates, not invoices. It applies only to unassigned rows; assigned unknowns remain under their writer or migration's provenance rules. Both cache token counts must be zero, both cache costs are NULL or zero, and prompt/completion tokens and prices form complete, finite, nonnegative pairs. Positive usage requires a positive price; zero usage requires a zero price. All-zero placeholders remain unverified. With zero cache, both additive and cache-inclusive contracts reduce to prompt plus completion. The source evidence is retired `llmpedia` commit `5ea5e35`, `llmpedia_workflows` commit `417f124`, and this utility's commits `a12dd10`, `70ef403`, and `4ed474f`. It changes only a NULL `total_cost` and is safe to rerun.
+
 ## Local editable installation
 
 The approved deployment uses `/Users/manager/Code/llm-query-utils` as the shared editable source. Updating it can affect multiple applications. Release reviewed code at a safe batch boundary and check each actual interpreter's import origin before resuming work.
@@ -77,6 +79,10 @@ uv run --no-sync python scripts/consolidate_usage.py verify --output "$EVIDENCE/
 uv run --no-sync python scripts/consolidate_usage.py attribute-pi \
   --profile /Users/manager/Logs/llmpedia/.pi/usage-logging.json
 # Review the matched count and evidence, then repeat with --apply if approved.
+
+# Preview the matched count and prompt-plus-completion sum. Then apply explicitly.
+uv run --no-sync python scripts/consolidate_usage.py backfill-zero-cache
+uv run --no-sync python scripts/consolidate_usage.py backfill-zero-cache --apply
 ```
 
 The additive SQL is `migrations/001_central_usage.sql`. It expects the existing papers table. For a fresh sentiment installation on this shared database, provision that canonical contract rather than rerunning the superseded sentiment migration 017 that creates the public duplicate. Do not rewrite migration 017 in place.

@@ -42,6 +42,17 @@ SOURCE_SELECT = """SELECT id::text, tstp AT TIME ZONE 'UTC' AS tstp,
     reasoning_output_tokens
     FROM public.token_usage_logs ORDER BY id"""
 TARGET_SELECT = ", ".join("id::text" if name == "id" else name for name in FIELDS)
+ZERO_CACHE_BACKFILL_PREDICATE = """project_id IS NULL AND total_cost IS NULL
+    AND cache_creation_input_tokens=0 AND cache_read_input_tokens=0
+    AND (cache_creation_cost IS NULL OR cache_creation_cost=0)
+    AND (cache_read_cost IS NULL OR cache_read_cost=0)
+    AND prompt_tokens IS NOT NULL AND prompt_tokens>=0
+    AND completion_tokens IS NOT NULL AND completion_tokens>=0
+    AND prompt_cost IS NOT NULL AND prompt_cost>=0 AND prompt_cost<'Infinity'::numeric
+    AND completion_cost IS NOT NULL AND completion_cost>=0 AND completion_cost<'Infinity'::numeric
+    AND ((prompt_tokens>0 AND prompt_cost>0) OR (prompt_tokens=0 AND prompt_cost=0))
+    AND ((completion_tokens>0 AND completion_cost>0) OR (completion_tokens=0 AND completion_cost=0))
+    AND prompt_cost+completion_cost>0"""
 
 
 def apply_schema(conn):
@@ -216,6 +227,24 @@ def attribute_pi(conn, profile_path, *, apply=False):
             "evidence": "explicit profile + matching project prefix + nonempty Pi session + provider/model"}
 
 
+def backfill_zero_cache(conn, *, apply=False):
+    if apply:
+        sql = f"""WITH changed AS (
+            UPDATE papers.token_usage_logs
+            SET total_cost=prompt_cost+completion_cost
+            WHERE {ZERO_CACHE_BACKFILL_PREDICATE}
+            RETURNING total_cost)
+            SELECT count(*),coalesce(sum(total_cost),0) FROM changed"""
+    else:
+        sql = f"""SELECT count(*),coalesce(sum(prompt_cost+completion_cost),0)
+            FROM papers.token_usage_logs WHERE {ZERO_CACHE_BACKFILL_PREDICATE}"""
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        matched, total = cur.fetchone()
+    return {"matched": matched, "total_cost_sum": total,
+            "updated": matched if apply else 0, "dry_run": not apply}
+
+
 def backup_checksum(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -272,7 +301,7 @@ def retire_source(conn, verification, restore_evidence, backup, *, writers_quies
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("schema", "copy", "verify", "attribute-pi", "backup-evidence", "retire"))
+    parser.add_argument("action", choices=("schema", "copy", "verify", "attribute-pi", "backfill-zero-cache", "backup-evidence", "retire"))
     parser.add_argument("--dsn", default=os.environ.get("USAGE_MIGRATION_DSN"), help="explicit DSN or USAGE_MIGRATION_DSN; .env is not loaded")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -308,6 +337,8 @@ def main(argv=None):
                 require_verified(result)
             elif args.action == "attribute-pi":
                 result = attribute_pi(conn, args.profile, apply=args.apply)
+            elif args.action == "backfill-zero-cache":
+                result = backfill_zero_cache(conn, apply=args.apply)
             elif args.action == "backup-evidence":
                 result = backup_evidence(conn, args.backup)
             elif not args.apply:
