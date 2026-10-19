@@ -151,6 +151,32 @@ def _number(mapping: dict[str, Any], key: str, *, integer: bool = False) -> int 
     return value
 
 
+# Providers that report $0 by design (subscription-billed) mapped to the LiteLLM
+# provider whose public API prices give a comparable estimate.
+ESTIMATED_COST_PROVIDERS = {"claude-bridge": "anthropic"}
+COST_RATE_KEYS = {
+    "input": "input_cost_per_token",
+    "output": "output_cost_per_token",
+    "cacheRead": "cache_read_input_token_cost",
+    "cacheWrite": "cache_creation_input_token_cost",
+}
+
+
+def estimated_cost(model_name: str, usage: dict[str, Any]) -> dict[str, float | None]:
+    provider, model_id = model_name.split("/", 1)
+    from litellm import get_model_info
+
+    try:
+        rates = get_model_info(f"{ESTIMATED_COST_PROVIDERS[provider]}/{model_id}")
+    except Exception:  # LiteLLM raises a bare Exception for unmapped models.
+        return {key: None for key in COST_RATE_KEYS}
+    cost: dict[str, float | None] = {}
+    for key, rate_key in COST_RATE_KEYS.items():
+        tokens, rate = _number(usage, key, integer=True), rates.get(rate_key)
+        cost[key] = tokens * rate if tokens is not None and rate is not None else None
+    return cost
+
+
 def record_values(
     record: dict[str, Any], destination: str, project_id: str | None = None
 ) -> tuple[Any, ...]:
@@ -193,6 +219,9 @@ def record_values(
         raise RecordError("usage.cost must be an object")
 
     _number(cost, "total")  # Reject corrupt pending data before deriving a total.
+    if record["model_name"].split("/", 1)[0] in ESTIMATED_COST_PROVIDERS:
+        cost = estimated_cost(record["model_name"], usage)
+        usage = {**usage, "cost": cost}
     total_cost = pi_total_cost(usage)
 
     return (

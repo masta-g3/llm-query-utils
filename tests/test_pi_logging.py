@@ -181,6 +181,37 @@ def test_record_derives_total_only_when_all_component_costs_are_complete(profile
     assert pi_logging.record_values(incomplete, loaded.destination, loaded.project_id)[-1] is None
 
 
+def test_record_estimates_api_equivalent_cost_for_claude_bridge(profile):
+    loaded = pi_logging.load_profile(profile)
+    record = make_record(loaded, model_name="claude-bridge/claude-opus-5-5")
+    record["usage"].update({
+        "input": 1000, "output": 200, "cacheRead": 10000, "cacheWrite": 2000,
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0},
+    })
+    from litellm import get_model_info
+
+    rates = get_model_info("anthropic/claude-opus-5-5")
+
+    values = pi_logging.record_values(record, loaded.destination, loaded.project_id)
+
+    assert values[7] == pytest.approx(1000 * rates["input_cost_per_token"])
+    assert values[8] == pytest.approx(200 * rates["output_cost_per_token"])
+    assert values[11] == pytest.approx(2000 * rates["cache_creation_input_token_cost"])
+    assert values[12] == pytest.approx(10000 * rates["cache_read_input_token_cost"])
+    assert values[-1] == pytest.approx(sum(values[i] for i in (7, 8, 11, 12)))
+    assert values[-1] > 0
+
+
+def test_record_leaves_unpriced_claude_bridge_cost_unknown(profile):
+    loaded = pi_logging.load_profile(profile)
+    record = make_record(loaded, model_name="claude-bridge/not-a-real-model")
+    record["usage"]["cost"] = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}
+
+    values = pi_logging.record_values(record, loaded.destination, loaded.project_id)
+
+    assert (values[7], values[8], values[11], values[12], values[-1]) == (None, None, None, None, None)
+
+
 def test_record_rejects_filename_or_destination_mismatch(profile):
     loaded = pi_logging.load_profile(profile)
     record = make_record(loaded)
