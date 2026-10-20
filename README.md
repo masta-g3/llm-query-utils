@@ -190,6 +190,8 @@ pi-logged --print 'Reply with OK'
 
 The launcher resolves normal `pi` from PATH and explicitly loads the packaged extension, including when `--no-extensions` is present. It also points `PI_TMUX_SUBAGENTS_PI_BIN` at itself, so tmux children use the same launcher. Each child loads the project profile independently. Do not alias normal `pi` to this command or auto-load the extension globally: existing Python callbacks could otherwise log the same calls twice.
 
+Rows take `project_id` from the profile. `process_id` is the subagent name from `PI_SUBAGENT_AGENT`, defaulting to `scheduler`, with `/compaction` appended for compaction usage; it does not repeat the project.
+
 Reported response and default-compaction usage is saved first in private local files under `~/.local/state/llm-query-utils/pi/<project_id>/`. Each record has a UUID reused for every upload attempt. PostgreSQL inserts use `ON CONFLICT (id) DO NOTHING`; files are removed only after commit. Destination fingerprints prevent pending records from being redirected by a changed profile.
 
 Database failures leave records pending and do not stop Pi. Startup, run completion, compaction, and shutdown make bounded upload attempts. Retry manually with:

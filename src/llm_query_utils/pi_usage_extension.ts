@@ -103,7 +103,8 @@ function baseRecord(config, ctx, values) {
     id: randomUUID(),
     tstp: timestamp(values.timestamp),
     model_name: `${values.provider}/${values.model}`,
-    process_id: `${config.project_id}/${stage}${values.eventKind === "compaction" ? "/compaction" : ""}`,
+    // project_id is its own column; process_id names only the task, matching Python callers.
+    process_id: `${stage}${values.eventKind === "compaction" ? "/compaction" : ""}`,
     session_id: String(ctx.sessionManager.getSessionId()),
     usage: selectedUsage(values.usage),
     event_kind: values.eventKind,

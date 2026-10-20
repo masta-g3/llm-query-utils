@@ -150,7 +150,7 @@ def test_collects_each_assistant_response_and_filters_tool_cycle_events(tmp_path
     }
     assert first_record["tstp"] == "2023-11-14T22:13:20.000Z"
     assert first_record["model_name"] == "provider/requested"
-    assert first_record["process_id"] == "atlas/research"
+    assert first_record["process_id"] == "research"
     assert first_record["session_id"] == "session-123"
     assert first_record["event_kind"] == "response"
     assert first_record["attribution"] == "request_model"
@@ -197,7 +197,7 @@ def test_duplicate_factory_registration_is_ignored(tmp_path):
     assert result.returncode == 0, result.stderr
     records = pending_records(tmp_path)
     assert len(records) == 1
-    assert records[0]["process_id"] == "atlas/scheduler"
+    assert records[0]["process_id"] == "scheduler"
     assert records[0]["job_id"] is None
     assert records[0]["parent_job_id"] is None
     assert "cost" not in records[0]["usage"]
@@ -242,7 +242,7 @@ def test_default_compaction_uses_captured_catalog_model_and_flushes(tmp_path):
     assert record["tstp"] == "2023-11-14T22:13:25.000Z"
     assert record["model_name"] == "catalog-provider/catalog-model"
     assert record["requested_model"] == "catalog-model"
-    assert record["process_id"] == "atlas/writer/compaction"
+    assert record["process_id"] == "writer/compaction"
     assert record["event_kind"] == "compaction"
     assert record["attribution"] == "compaction_catalog_model"
     assert record["usage"] == usage
